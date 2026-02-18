@@ -188,7 +188,7 @@ if not st.session_state.logged_in:
         with st.form("login_form"):
             username = st.text_input("Work Email", placeholder="name@company.com")
             password = st.text_input("Password", type="password", placeholder="••••••••")
-            submitted = st.form_submit_button("Sign In →", use_container_width=True, type="primary")
+            submitted = st.form_submit_button("Sign In →", width='stretch', type="primary")
             
             if submitted:
                 if username == os.getenv("APP_USERNAME") and password == os.getenv("APP_PASSWORD"):
@@ -334,7 +334,7 @@ with st.sidebar:
 
     # Logout at the bottom of the sidebar
     st.markdown("---")
-    if st.button("🚪 Sign Out", use_container_width=True):
+    if st.button("🚪 Sign Out", width='stretch'):
         st.session_state.logged_in = False
         st.session_state.logged_in_user = ""
         st.cache_data.clear()
@@ -427,7 +427,7 @@ if view_mode == "📈 Financial Insights":
             xaxis=dict(title='')
         )
         fig.update_traces(fillcolor='rgba(59, 130, 246, 0.2)', line=dict(width=3, shape='spline'))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
         # --- BUILD HIERARCHICAL DATAFRAME ---
         def build_hierarchical_report(data, periods):
@@ -480,7 +480,7 @@ if view_mode == "📈 Financial Insights":
         st.markdown("### 📋 Detailed Statement")
         st.dataframe(
             styled_df, 
-            use_container_width=True, 
+            width='stretch', 
             height=600,
             hide_index=True,
             column_config={"Type": None}
@@ -506,7 +506,7 @@ elif view_mode == "✏️ Ledger Editor":
         editor_df = st.data_editor(
             editor_display_df,
             key="editor",
-            use_container_width=True,
+            width='stretch',
             num_rows="fixed",
             disabled=[c for c in base_display_cols if c != 'Balance'],
             column_config={
@@ -537,12 +537,12 @@ elif view_mode == "✏️ Ledger Editor":
     st.write("<br>", unsafe_allow_html=True)
     col1, col2, col3 = st.columns([6, 2, 2])
     with col2:
-        if st.button("🗑️ Discard", use_container_width=True, disabled=not st.session_state.dirty):
+        if st.button("🗑️ Discard", width='stretch', disabled=not st.session_state.dirty):
             st.session_state.current_df = st.session_state.original_df.copy()
             st.session_state.dirty = False
             st.rerun()
     with col3:
-        if st.button("💾 Save to Fabric", use_container_width=True, disabled=not st.session_state.dirty, type="primary"):
+        if st.button("💾 Save to Fabric", width='stretch', disabled=not st.session_state.dirty, type="primary"):
             baseline_df = st.session_state.original_df
             working_df = st.session_state.current_df
             delta_rows = working_df[working_df['Balance'] != baseline_df['Balance']]
