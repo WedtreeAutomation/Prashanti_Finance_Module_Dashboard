@@ -5,3 +5,4 @@ numpy
 azure-identity
 python-dotenv
 plotly
+openpyxl
