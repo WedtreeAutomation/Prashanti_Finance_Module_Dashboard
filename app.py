@@ -448,7 +448,7 @@ if not st.session_state.logged_in:
         with st.form("login_form"):
             username = st.text_input("Work Email", placeholder="name@company.com")
             password = st.text_input("Password", type="password", placeholder="••••••••")
-            submitted = st.form_submit_button("Sign In →", use_container_width=True, type="primary")
+            submitted = st.form_submit_button("Sign In →", width = 'Stretch', type="primary")
             if submitted:
                 if username == os.getenv("APP_USERNAME") and password == os.getenv("APP_PASSWORD"):
                     st.session_state.logged_in = True
@@ -565,7 +565,7 @@ with st.sidebar:
         if e_partner != "All": e_filtered = e_filtered[e_filtered['partner_id_name'] == e_partner]
 
     st.markdown("<hr>", unsafe_allow_html=True)
-    if st.button("🚪 Sign Out", use_container_width=True, type="secondary"):
+    if st.button("🚪 Sign Out", width = 'Stretch', type="secondary"):
         st.session_state.logged_in = False
         st.session_state.logged_in_user = ""
         st.query_params.clear() # Clears URL auth state token
@@ -623,7 +623,7 @@ if view_mode == "📈 Financial Insights":
     fig.add_trace(go.Bar(x=profit_df['DisplayPeriod'], y=profit_df['Expenses'], name='Expenses', marker_color='#F43F5E', opacity=0.8))
     fig.add_trace(go.Scatter(x=profit_df['DisplayPeriod'], y=profit_df['Profit'], mode='lines+markers', name='Net Profit', line=dict(color='#2563EB', width=3, shape='spline'), marker=dict(size=8, color='#1D4ED8'), yaxis='y'))
     fig.update_layout(title=dict(text='<b>Revenue, Expenses & Net Profit</b>', font=dict(size=15, color='#0F2044')), barmode='group', plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', margin=dict(l=40, r=40, t=50, b=40), yaxis=dict(gridcolor='#E2E8F0', title='Amount (₹)', tickformat='₹,.0f'), xaxis=dict(showline=True, linecolor='#CBD5E1', tickfont=dict(size=10)), hovermode='x unified', legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, bgcolor='rgba(255,255,255,0.9)', font=dict(size=10)))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width = 'Stretch')
 
     st.markdown("---")
     
@@ -635,14 +635,14 @@ if view_mode == "📈 Financial Insights":
     with col2:
         export_col1, export_col2, export_col3 = st.columns([1, 1, 1])
         with export_col1:
-            if st.button("⊞ Expand All", use_container_width=True):
+            if st.button("⊞ Expand All", width = 'Stretch'):
                 for cls_name in hierarchy.keys():
                     st.session_state.open_classifications.add(f"cls_{cls_name}")
                     for acc_name in hierarchy[cls_name]['accounts'].keys():
                         st.session_state.open_accounts.add(f"acc_{cls_name}__{acc_name}")
                 st.rerun()
         with export_col2:
-            if st.button("Collapse All", use_container_width=True):
+            if st.button("Collapse All", width = 'Stretch'):
                 st.session_state.open_classifications.clear()
                 st.session_state.open_accounts.clear()
                 st.rerun()
@@ -659,7 +659,7 @@ if view_mode == "📈 Financial Insights":
                 label="📥 Export", data=excel_bytes,
                 file_name=f"PL_Report_{store_filter}_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True, type="primary"
+                width = 'Stretch', type="primary"
             )
 
     st.markdown("<p style='color:#64748B; font-size:0.8rem; margin-bottom:0.5rem;'>Click on Classification rows to expand accounts. Click on Account rows to expand partners.</p>", unsafe_allow_html=True)
@@ -685,7 +685,7 @@ if view_mode == "📈 Financial Insights":
         
         with row_cols[0]:
             btn_label = f"{arrow} 📂 {cls_name}"
-            if st.button(btn_label, key=f"btn_{cls_key}", use_container_width=True):
+            if st.button(btn_label, key=f"btn_{cls_key}", width = 'Stretch'):
                 if cls_open:
                     st.session_state.open_classifications.discard(cls_key)
                     st.session_state.open_accounts = {a for a in st.session_state.open_accounts if not a.startswith(f"acc_{cls_name}__")}
@@ -712,7 +712,7 @@ if view_mode == "📈 Financial Insights":
                 
                 with acc_cols[0]:
                     acc_btn_label = f"　　{acc_arrow} 📄 {acc_name}"
-                    if st.button(acc_btn_label, key=f"btn_{acc_key}", use_container_width=True):
+                    if st.button(acc_btn_label, key=f"btn_{acc_key}", width = 'Stretch'):
                         if acc_open: st.session_state.open_accounts.discard(acc_key)
                         else: st.session_state.open_accounts.add(acc_key)
                         st.rerun()
@@ -770,7 +770,7 @@ elif view_mode == "✏️ Ledger Editor":
         st.markdown(f"<span style='color:#64748B; font-size:0.8rem; font-weight:500;'>{len(editor_display_df)} records ready for editing</span>", unsafe_allow_html=True)
 
         editor_df = st.data_editor(
-            editor_display_df, key="editor", use_container_width=True, num_rows="fixed",
+            editor_display_df, key="editor", width = 'Stretch', num_rows="fixed",
             disabled=[c for c in base_display_cols if c != 'Balance'],
             column_config={
                 "id": None,
@@ -793,13 +793,13 @@ elif view_mode == "✏️ Ledger Editor":
     col1, col2, col3 = st.columns([6, 2, 2])
 
     with col2:
-        if st.button("🗑️ Discard", use_container_width=True, disabled=not st.session_state.dirty):
+        if st.button("🗑️ Discard", width = 'Stretch', disabled=not st.session_state.dirty):
             st.session_state.current_df = st.session_state.original_df.copy()
             st.session_state.dirty = False
             st.rerun()
 
     with col3:
-        if st.button("💾 Save to Fabric", use_container_width=True, disabled=not st.session_state.dirty, type="primary"):
+        if st.button("💾 Save to Fabric", width = 'Stretch', disabled=not st.session_state.dirty, type="primary"):
             baseline_df = st.session_state.original_df
             working_df = st.session_state.current_df
             delta_rows = working_df[working_df['Balance'] != baseline_df['Balance']]
