@@ -516,6 +516,8 @@ if df.empty:
 
 REVENUE_CLASSES = ['Income', 'Other Income']
 
+# ... (all previous code remains the same until the SIDEBAR NAVIGATION section)
+
 # =============================
 # SIDEBAR NAVIGATION
 # =============================
@@ -551,19 +553,74 @@ with st.sidebar:
 
         store_filter = st.selectbox("🏢 Store", ["All"] + sorted(df['Store'].dropna().astype(str).unique()))
 
+# Update the sidebar section for Ledger Editor to store periods in session state
     elif view_mode == "✏️ Ledger Editor":
+        st.markdown("<p style='color:#0F2044 !important; font-weight:600; font-size:1rem;'>📊 Report Filters</p>", unsafe_allow_html=True)
+        
+        # Add date range selection for editor
+        editor_date_range_type = st.radio("Range Type", ["📅 Single/Multiple Months", "📆 Financial Year"], 
+                                         horizontal=True, key="editor_range_type")
+    
+        if editor_date_range_type == "📅 Single/Multiple Months":
+            editor_base_period = st.selectbox("Base Period", period_list, key="editor_base_period")
+            editor_num_comparisons = st.number_input("Number of Periods", min_value=1, max_value=12, value=3, 
+                                                    key="editor_num_comparisons", 
+                                                    help="Total periods to display including base period")
+            base_idx = period_list.index(editor_base_period)
+            editor_selected_periods = period_list[base_idx: min(base_idx + editor_num_comparisons, len(period_list))]
+        else:
+            editor_available_years = sorted(df['Year'].dropna().unique(), reverse=True)
+            editor_selected_year = st.selectbox("Financial Year (Apr–Mar)", editor_available_years, key="editor_year")
+            fy_periods = get_financial_year_range(df, editor_selected_year, start_month=4)
+            if fy_periods:
+                editor_selected_periods = [p['display'] for p in fy_periods]
+                st.info(f"{len(editor_selected_periods)} periods: {fy_periods[0]['display']} → {fy_periods[-1]['display']}")
+            else:
+                editor_selected_periods = []
+    
+        # Store filter for editor
+        editor_store_filter = st.selectbox("🏢 Store", ["All"] + sorted(df['Store'].dropna().astype(str).unique()), 
+                                          key="editor_store")
+        
+        st.markdown("<hr>", unsafe_allow_html=True)
         st.markdown("<p style='color:#0F2044 !important; font-weight:600; font-size:1rem;'>✏️ Editor Filters</p>", unsafe_allow_html=True)
-        edit_period = st.selectbox("Period", period_list)
-        e_filtered = df[df['DisplayPeriod'] == edit_period]
-        e_store = st.selectbox("Store", ["All"] + sorted(df['Store'].dropna().astype(str).unique()))
-        if e_store != "All": e_filtered = e_filtered[e_filtered['Store'] == e_store]
-        e_class = st.selectbox("Class", ["All"] + sorted(e_filtered['classification'].dropna().astype(str).unique()))
-        if e_class != "All": e_filtered = e_filtered[e_filtered['classification'] == e_class]
-        e_account = st.selectbox("Account", ["All"] + sorted(e_filtered['account_name'].dropna().astype(str).unique()))
-        if e_account != "All": e_filtered = e_filtered[e_filtered['account_name'] == e_account]
-        e_partner = st.selectbox("Partner", ["All"] + sorted(e_filtered['partner_id_name'].dropna().astype(str).unique()))
-        if e_partner != "All": e_filtered = e_filtered[e_filtered['partner_id_name'] == e_partner]
-
+        
+        # Get filtered data based on selected periods and store
+        if editor_selected_periods:
+            editor_filtered_df = df[df['DisplayPeriod'].isin(editor_selected_periods)].copy()
+            if editor_store_filter != "All":
+                editor_filtered_df = editor_filtered_df[editor_filtered_df['Store'] == editor_store_filter]
+            
+            # Classification filter
+            if not editor_filtered_df.empty:
+                editor_class = st.selectbox("Class", ["All"] + sorted(editor_filtered_df['classification'].dropna().astype(str).unique()), 
+                                           key="editor_class")
+                if editor_class != "All":
+                    editor_filtered_df = editor_filtered_df[editor_filtered_df['classification'] == editor_class]
+                
+                # Account filter
+                if not editor_filtered_df.empty:
+                    editor_account = st.selectbox("Account", ["All"] + sorted(editor_filtered_df['account_name'].dropna().astype(str).unique()), 
+                                                 key="editor_account")
+                    if editor_account != "All":
+                        editor_filtered_df = editor_filtered_df[editor_filtered_df['account_name'] == editor_account]
+                    
+                    # Partner filter
+                    if not editor_filtered_df.empty:
+                        editor_partner = st.selectbox("Partner", ["All"] + sorted(editor_filtered_df['partner_id_name'].dropna().astype(str).unique()), 
+                                                     key="editor_partner")
+                        if editor_partner != "All":
+                            editor_filtered_df = editor_filtered_df[editor_filtered_df['partner_id_name'] == editor_partner]
+            
+            # Store the filtered dataframe and selected periods in session state
+            st.session_state.editor_filtered_df = editor_filtered_df
+            st.session_state.editor_selected_periods = editor_selected_periods
+            st.session_state.editor_store_filter = editor_store_filter
+        else:
+            st.session_state.editor_filtered_df = pd.DataFrame()
+            st.session_state.editor_selected_periods = []
+            st.warning("No periods selected.")
+    
     st.markdown("<hr>", unsafe_allow_html=True)
     if st.button("🚪 Sign Out", width = 'stretch', type="secondary"):
         st.session_state.logged_in = False
@@ -757,63 +814,241 @@ if view_mode == "📈 Financial Insights":
 # LEDGER EDITOR VIEW
 # ===========================
 elif view_mode == "✏️ Ledger Editor":
-    st.write("Double-click the **Balance** cell to adjust values. Click **Save to Fabric** to commit.")
+    # Check if we have filtered data from sidebar
+    if not hasattr(st.session_state, 'editor_filtered_df') or st.session_state.editor_filtered_df.empty:
+        st.info("ℹ️ Please select periods and filters in the sidebar to view/edit data.")
+        st.stop()
+    
+    editor_df = st.session_state.editor_filtered_df
+    editor_periods = st.session_state.editor_selected_periods
+    editor_store = st.session_state.editor_store_filter
+    
+    # Display summary of current filter selection
+    filter_summary = f"**Current View:** {len(editor_periods)} period(s): {', '.join(editor_periods)}"
+    if editor_store != "All":
+        filter_summary += f" | Store: {editor_store}"
+    st.markdown(filter_summary)
+    
+    st.markdown("Double-click any period balance to edit. Changes will be reflected in the aggregated total.")
 
-    if st.session_state.dirty: st.info("⚠️ You have pending edits. Click 'Save to Fabric' to commit.")
+    if st.session_state.dirty: 
+        st.info("⚠️ You have pending edits. Click 'Save to Fabric' to commit.")
 
-    base_display_cols = ['id', 'Store', 'classification', 'account_name', 'partner_id_name', 'Balance']
-    editor_display_df = e_filtered[base_display_cols].copy()
-
-    if editor_display_df.empty:
+    # Define dimension columns WITHOUT id for grouping
+    dimension_columns = ['Store', 'classification', 'account_name', 'partner_id_name']
+    
+    # First, verify we have data
+    if editor_df.empty:
         st.warning("No records found for the selected filters.")
     else:
-        st.markdown(f"<span style='color:#64748B; font-size:0.8rem; font-weight:500;'>{len(editor_display_df)} records ready for editing</span>", unsafe_allow_html=True)
+        # Create a pivot table with periods as columns, aggregating by the dimension columns
+        # Group by the dimension columns and sum balances across any IDs that might exist
+        pivot_df = editor_df.groupby(dimension_columns + ['DisplayPeriod'], as_index=False)['Balance'].sum()
+        
+        # Now pivot to get periods as columns
+        pivot_df = pivot_df.pivot_table(
+            index=dimension_columns,
+            columns='DisplayPeriod',
+            values='Balance',
+            aggfunc='sum',
+            fill_value=0.0
+        ).reset_index()
+        
+        # Remove the columns index name
+        pivot_df.columns.name = None
+        
+        # Get period columns (all columns not in dimension_columns)
+        period_columns = [col for col in pivot_df.columns if col not in dimension_columns]
+        
+        # Sort period columns chronologically
+        def get_period_sort_key(period):
+            try:
+                month_name, year = period.rsplit(' ', 1)
+                month_map = {
+                    'January': 1, 'February': 2, 'March': 3, 'April': 4, 'May': 5, 'June': 6,
+                    'July': 7, 'August': 8, 'September': 9, 'October': 10, 'November': 11, 'December': 12
+                }
+                month_num = month_map.get(month_name, 0)
+                return (int(year), month_num)
+            except:
+                return (9999, 99)
+        
+        if period_columns:
+            period_columns = sorted(period_columns, key=get_period_sort_key)
+            
+            # Calculate total column
+            pivot_df['Total'] = pivot_df[period_columns].sum(axis=1)
+            
+            # Reorder columns: dimension columns, then period columns, then total
+            column_order = dimension_columns + period_columns + ['Total']
+            pivot_df = pivot_df[column_order]
+            
+            # Ensure all numeric columns are properly typed
+            for col in period_columns + ['Total']:
+                pivot_df[col] = pd.to_numeric(pivot_df[col], errors='coerce').fillna(0.0)
+            
+            # Sort for better organization
+            pivot_df = pivot_df.sort_values(['classification', 'account_name', 'partner_id_name'])
+            
+            st.markdown(f"""
+            <span style='color:#64748B; font-size:0.8rem; font-weight:500;'>
+            {len(pivot_df)} unique account-partner combinations | 
+            Showing balances for {len(period_columns)} periods: {period_columns[0]} → {period_columns[-1]}
+            </span>
+            """, unsafe_allow_html=True)
 
-        editor_df = st.data_editor(
-            editor_display_df, key="editor", width = 'stretch', num_rows="fixed",
-            disabled=[c for c in base_display_cols if c != 'Balance'],
-            column_config={
-                "id": None,
-                "Balance": st.column_config.NumberColumn("Balance (₹)", help="Double click to edit", format="₹%.2f", step=0.01, required=True),
-                "Store": st.column_config.TextColumn("Store", disabled=True),
+            # Create column configuration for the editor
+            column_config = {
+                "Store": st.column_config.TextColumn("Store", disabled=True, width="small"),
                 "classification": st.column_config.TextColumn("Classification", disabled=True),
                 "account_name": st.column_config.TextColumn("Account", disabled=True),
-                "partner_id_name": st.column_config.TextColumn("Partner", disabled=True)
+                "partner_id_name": st.column_config.TextColumn("Partner", disabled=True),
+                "Total": st.column_config.NumberColumn(
+                    "Total (All Periods)",
+                    help="Aggregated total across all selected periods",
+                    format="₹%.2f",
+                    disabled=True,  # Total is calculated, not editable directly
+                )
             }
-        )
+            
+            # Add dynamic column configs for each period
+            for period in period_columns:
+                # Create a short period name for display
+                try:
+                    month_name, year = period.rsplit(' ', 1)
+                    short_period = month_name[:3] + " " + year[-2:]
+                except:
+                    short_period = period
+                
+                column_config[period] = st.column_config.NumberColumn(
+                    short_period,
+                    help=f"Double click to edit balance for {period}",
+                    format="₹%.2f",
+                    step=0.01,
+                    required=True
+                )
 
-        changed_mask = editor_df['Balance'] != editor_display_df['Balance']
-        if changed_mask.any():
-            st.session_state.dirty = True
-            for idx in editor_df[changed_mask].index:
-                row_id = editor_df.loc[idx, 'id']
-                st.session_state.current_df.loc[st.session_state.current_df['id'] == row_id, 'Balance'] = editor_df.loc[idx, 'Balance']
+            # Apply any active editor filters
+            filtered_pivot_df = pivot_df.copy()
+            
+            if 'editor_class' in st.session_state and st.session_state.editor_class != "All":
+                filtered_pivot_df = filtered_pivot_df[filtered_pivot_df['classification'] == st.session_state.editor_class]
+            
+            if 'editor_account' in st.session_state and st.session_state.editor_account != "All":
+                filtered_pivot_df = filtered_pivot_df[filtered_pivot_df['account_name'] == st.session_state.editor_account]
+            
+            if 'editor_partner' in st.session_state and st.session_state.editor_partner != "All":
+                filtered_pivot_df = filtered_pivot_df[filtered_pivot_df['partner_id_name'] == st.session_state.editor_partner]
+
+            # Display the data editor with periods as columns
+            editor_df_widget = st.data_editor(
+                filtered_pivot_df, 
+                key="editor", 
+                use_container_width=True,
+                hide_index=True,
+                num_rows="fixed",
+                disabled=['Store', 'classification', 'account_name', 'partner_id_name', 'Total'],
+                column_config=column_config
+            )
+
+            # Check for changes in period columns
+            changes_detected = False
+            changes_summary = []
+            
+            for idx in editor_df_widget.index:
+                if idx in filtered_pivot_df.index:
+                    # Get the dimension values for this row
+                    store = filtered_pivot_df.loc[idx, 'Store']
+                    classification = filtered_pivot_df.loc[idx, 'classification']
+                    account = filtered_pivot_df.loc[idx, 'account_name']
+                    partner = filtered_pivot_df.loc[idx, 'partner_id_name']
+                    
+                    for period in period_columns:
+                        if period in editor_df_widget.columns:
+                            original_value = filtered_pivot_df.loc[idx, period]
+                            new_value = editor_df_widget.loc[idx, period]
+                            
+                            if abs(float(original_value) - float(new_value)) > 0.001:
+                                changes_detected = True
+                                changes_summary.append({
+                                    'store': store,
+                                    'classification': classification,
+                                    'account': account,
+                                    'partner': partner,
+                                    'period': period,
+                                    'old_value': original_value,
+                                    'new_value': new_value
+                                })
+            
+            if changes_detected:
+                st.session_state.dirty = True
+                
+                # Show summary of changes
+                with st.expander(f"📝 View {len(changes_summary)} pending changes"):
+                    changes_df = pd.DataFrame(changes_summary)
+                    if not changes_df.empty:
+                        st.dataframe(
+                            changes_df.style.format({
+                                'old_value': '₹{:,.2f}',
+                                'new_value': '₹{:,.2f}'
+                            }),
+                            use_container_width=True
+                        )
+                
+                # Apply the changes to current_df - need to update ALL records matching the dimension combo
+                for change in changes_summary:
+                    # Find all records in current_df that match this dimension combination and period
+                    mask = (st.session_state.current_df['Store'] == change['store']) & \
+                           (st.session_state.current_df['classification'] == change['classification']) & \
+                           (st.session_state.current_df['account_name'] == change['account']) & \
+                           (st.session_state.current_df['partner_id_name'] == change['partner']) & \
+                           (st.session_state.current_df['DisplayPeriod'] == change['period'])
+                    
+                    if mask.any():
+                        # If there are multiple records (different IDs), distribute the total change
+                        record_count = mask.sum()
+                        if record_count > 1:
+                            # Distribute evenly across all records with this dimension combo
+                            per_record_change = (change['new_value'] - change['old_value']) / record_count
+                            st.session_state.current_df.loc[mask, 'Balance'] += per_record_change
+                        else:
+                            # Single record, update directly
+                            st.session_state.current_df.loc[mask, 'Balance'] = change['new_value']
+            else:
+                st.session_state.dirty = False
 
     st.write("<br>", unsafe_allow_html=True)
     col1, col2, col3 = st.columns([6, 2, 2])
 
     with col2:
-        if st.button("🗑️ Discard", width = 'stretch', disabled=not st.session_state.dirty):
+        if st.button("🗑️ Discard", use_container_width=True, disabled=not st.session_state.dirty):
             st.session_state.current_df = st.session_state.original_df.copy()
             st.session_state.dirty = False
             st.rerun()
 
     with col3:
-        if st.button("💾 Save to Fabric", width = 'stretch', disabled=not st.session_state.dirty, type="primary"):
+        if st.button("💾 Save to Fabric", use_container_width=True, disabled=not st.session_state.dirty, type="primary"):
             baseline_df = st.session_state.original_df
             working_df = st.session_state.current_df
-            delta_rows = working_df[working_df['Balance'] != baseline_df['Balance']]
-
-            if not delta_rows.empty:
-                with st.spinner(f"Writing {len(delta_rows)} updates..."):
+            
+            # Find all changed records across all periods
+            merged_df = baseline_df.merge(
+                working_df, 
+                on=['id', 'DisplayPeriod'], 
+                suffixes=('_original', '_new')
+            )
+            changed_records = merged_df[abs(merged_df['Balance_original'] - merged_df['Balance_new']) > 0.001]
+            
+            if not changed_records.empty:
+                with st.spinner(f"Writing {len(changed_records)} updates across periods..."):
                     success_count, error_count = 0, 0
                     progress_bar = st.progress(0)
 
-                    for idx, (_, row) in enumerate(delta_rows.iterrows()):
+                    for idx, (_, row) in enumerate(changed_records.iterrows()):
                         current_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                         variables = {
                             "id": int(row["id"]),
-                            "balance": float(row["Balance"]) if pd.notnull(row["Balance"]) else 0.0,
+                            "balance": float(row["Balance_new"]) if pd.notnull(row["Balance_new"]) else 0.0,
                             "last_modified_at": current_time,
                             "last_modified_user": st.session_state.logged_in_user
                         }
@@ -821,23 +1056,30 @@ elif view_mode == "✏️ Ledger Editor":
                             response = run_graphql(UPDATE_MUTATION, variables)
                             if "errors" not in response:
                                 success_count += 1
-                                st.session_state.current_df.loc[
-                                    st.session_state.current_df['id'] == row['id'], ['last_modified_at', 'last_modified_user']
-                                ] = [current_time, st.session_state.logged_in_user]
-                            else: error_count += 1
-                        except Exception: error_count += 1
-                        progress_bar.progress((idx + 1) / len(delta_rows))
+                                # Update the original_df with the new balance
+                                mask = (st.session_state.original_df['id'] == row['id']) & \
+                                       (st.session_state.original_df['DisplayPeriod'] == row['DisplayPeriod'])
+                                st.session_state.original_df.loc[mask, 'Balance'] = row['Balance_new']
+                                st.session_state.original_df.loc[mask, 'last_modified_at'] = current_time
+                                st.session_state.original_df.loc[mask, 'last_modified_user'] = st.session_state.logged_in_user
+                            else: 
+                                error_count += 1
+                        except Exception: 
+                            error_count += 1
+                        progress_bar.progress((idx + 1) / len(changed_records))
 
                     if error_count == 0:
-                        st.session_state.original_df = st.session_state.current_df.copy()
                         st.session_state.dirty = False
                         load_data.clear()
-                        st.success(f"✅ {success_count} changes saved successfully!")
+                        st.success(f"✅ {success_count} changes saved successfully across {len(period_columns)} periods!")
                         st.balloons()
                         st.rerun()
                     elif success_count > 0:
                         st.warning(f"⚠️ {success_count} succeeded, {error_count} failed.")
-                        st.session_state.original_df = st.session_state.current_df.copy()
                         st.session_state.dirty = False
                         load_data.clear()
-                    else: st.error("❌ All updates failed. Please try again.")
+                    else: 
+                        st.error("❌ All updates failed. Please try again.")
+            else:
+                st.info("No changes detected to save.")
+                st.session_state.dirty = False
