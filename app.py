@@ -187,13 +187,50 @@ def fmt_currency(val):
 # =============================
 def build_hierarchy_data(report_df, periods):
     hierarchy = {}
-    for classification in sorted(report_df['classification'].dropna().unique()):
+    
+    # Define the desired order with more flexible matching
+    # This list should match EXACTLY how they appear in your database
+    classification_order = [
+        'Income',
+        'Other Income',
+        'Employee cost',
+        'Rent & Utilities',           # Exact match from your data
+        'Marketing & Advertisment',    # Note: 'Advertisment' (missing 'e') as in your data
+        'Admin Exp',        'Finance cost',
+        'Other Expenses',
+        'Supplier Payments',           # Exact match from your data
+        'Purchase Expense',
+        'Logistics',
+        'Expense' 
+    ]
+    
+    # Get unique classifications from the data
+    unique_classifications = report_df['classification'].dropna().unique()
+    
+    # Create a custom sort key function
+    def get_classification_order(cls):
+        try:
+            return classification_order.index(cls)
+        except ValueError:
+            # If classification not in our predefined list, print it for debugging
+            print(f"Classification not in order list: '{cls}'")
+            # Put it at the end, sorted alphabetically
+            return len(classification_order) + (sum(ord(c) for c in cls) if cls else 0)
+    
+    # Sort classifications according to the defined order
+    sorted_classifications = sorted(unique_classifications, key=get_classification_order)
+    
+    # Debug: Print the sorted order to see what's happening
+    # st.write("Debug - Classification order:", sorted_classifications)
+    
+    for classification in sorted_classifications:
         cls_df = report_df[report_df['classification'] == classification]
         cls_totals = {}
         for p in periods:
             cls_totals[p] = cls_df[cls_df['DisplayPeriod'] == p]['Balance'].sum()
         
         accounts = {}
+        # Sort accounts alphabetically within each classification
         for account in sorted(cls_df['account_name'].dropna().unique()):
             acc_df = cls_df[cls_df['account_name'] == account]
             acc_totals = {}
@@ -201,6 +238,7 @@ def build_hierarchy_data(report_df, periods):
                 acc_totals[p] = acc_df[acc_df['DisplayPeriod'] == p]['Balance'].sum()
             
             partners = {}
+            # Sort partners alphabetically within each account
             for partner in sorted(acc_df['partner_id_name'].dropna().unique()):
                 prt_df = acc_df[acc_df['partner_id_name'] == partner]
                 prt_totals = {}
@@ -273,7 +311,33 @@ def build_excel_report(hierarchy, periods, store_filter="All", expand_all=False,
     # --- Data Population with Outline Grouping ---
     current_row = header_row + 1
     
-    for cls_name, cls_data in hierarchy.items():
+    # Define the desired order matching your database exactly
+    classification_order = [
+        'Income',
+        'Other Income',
+        'Employee cost',
+        'Rent & Utilities',           # Exact match from your data
+        'Marketing & Advertisment',    # Note: 'Advertisment' (missing 'e') as in your data
+        'Admin Exp',        'Finance cost',
+        'Other Expenses',
+        'Supplier Payments',           # Exact match from your data
+        'Purchase Expense',
+        'Logistics',
+        'Expense'
+    ]
+    
+    def get_classification_order(cls):
+        try:
+            return classification_order.index(cls)
+        except ValueError:
+            # If classification not in our predefined list, put it at the end
+            return len(classification_order) + (sum(ord(c) for c in cls) if cls else 0)
+    
+    # Sort classifications according to the defined order
+    sorted_classifications = sorted(hierarchy.keys(), key=get_classification_order)
+    
+    for cls_name in sorted_classifications:
+        cls_data = hierarchy[cls_name]
         cls_key = f"cls_{cls_name}"
         is_cls_open = expand_all or (cls_key in open_classifications)
         cls_total = sum(cls_data['totals'].values())
@@ -303,7 +367,9 @@ def build_excel_report(hierarchy, periods, store_filter="All", expand_all=False,
         ws.row_dimensions[current_row].height = 20
         current_row += 1
         
-        for acc_name, acc_data in cls_data['accounts'].items():
+        # Sort accounts alphabetically within each classification
+        for acc_name in sorted(cls_data['accounts'].keys()):
+            acc_data = cls_data['accounts'][acc_name]
             acc_key = f"acc_{cls_name}__{acc_name}"
             is_acc_open = expand_all or (acc_key in open_accounts)
             acc_total = sum(acc_data['totals'].values())
@@ -339,7 +405,9 @@ def build_excel_report(hierarchy, periods, store_filter="All", expand_all=False,
             ws.row_dimensions[current_row].height = 18
             current_row += 1
             
-            for partner_name, prt_totals in acc_data['partners'].items():
+            # Sort partners alphabetically within each account
+            for partner_name in sorted(acc_data['partners'].keys()):
+                prt_totals = acc_data['partners'][partner_name]
                 prt_total = sum(prt_totals.values())
                 
                 # 3. Partner (Level 2 details inside Account)
