@@ -1,4 +1,5 @@
-import streamlit as st
+
+​import streamlit as st
 import pandas as pd
 import requests
 import os
@@ -142,9 +143,9 @@ query {
   executesp_readData { id account_name classification partner_id_name Store Balance Year MonthName Month FinancialYearMonth last_modified_at last_modified_user }
 }
 """
-UPDATE_MUTATION = """
-mutation updateBalance($id: Int!, $balance: Float, $last_modified_at: DateTime, $last_modified_user: String) {
-  executesp_updateBalance(id: $id, balance: $balance, last_modified_at: $last_modified_at, last_modified_user: $last_modified_user) { rows_updated }
+UPSERT_MUTATION = """
+mutation upsertBalance($year: Int!, $monthName: String!, $store: String!, $balance: Float, $account_name: String!, $classification: String!, $partner_id_name: String!, $last_modified_at: DateTime, $last_modified_user: String) {
+  executesp_upsertAccountBalance(year: $year, monthName: $monthName, store: $store, balance: $balance, account_name: $account_name, classification: $classification, partner_id_name: $partner_id_name, last_modified_at: $last_modified_at, last_modified_user: $last_modified_user) { rows_affected }
 }
 """
 
@@ -219,9 +220,6 @@ def build_hierarchy_data(report_df, periods):
     
     # Sort classifications according to the defined order
     sorted_classifications = sorted(unique_classifications, key=get_classification_order)
-    
-    # Debug: Print the sorted order to see what's happening
-    # st.write("Debug - Classification order:", sorted_classifications)
     
     for classification in sorted_classifications:
         cls_df = report_df[report_df['classification'] == classification]
@@ -514,7 +512,7 @@ if not st.session_state.logged_in:
         st.markdown("<h2 style='color:#0F2044; font-weight:700;'>Secure Login</h2>", unsafe_allow_html=True)
         st.write("Sign in to access the dashboard.")
         with st.form("login_form"):
-            username = st.text_input("Work Email", placeholder="name@company.com")
+            username = st.text_input("Email", placeholder="name@company.com")
             password = st.text_input("Password", type="password", placeholder="••••••••")
             submitted = st.form_submit_button("Sign In →", width = 'stretch', type="primary")
             if submitted:
@@ -584,8 +582,6 @@ if df.empty:
 
 REVENUE_CLASSES = ['Income', 'Other Income']
 
-# ... (all previous code remains the same until the SIDEBAR NAVIGATION section)
-
 # =============================
 # SIDEBAR NAVIGATION
 # =============================
@@ -621,7 +617,6 @@ with st.sidebar:
 
         store_filter = st.selectbox("🏢 Store", ["All"] + sorted(df['Store'].dropna().astype(str).unique()))
 
-# Update the sidebar section for Ledger Editor to store periods in session state
     elif view_mode == "✏️ Ledger Editor":
         st.markdown("<p style='color:#0F2044 !important; font-weight:600; font-size:1rem;'>📊 Report Filters</p>", unsafe_allow_html=True)
         
@@ -702,9 +697,9 @@ with st.sidebar:
 # =============================
 st.markdown(f'<div class="main-header">💠 {view_mode.split(" ", 1)[1]}</div>', unsafe_allow_html=True)
 
-# ===========================
+# =============================
 # FINANCIAL INSIGHTS VIEW
-# ===========================
+# =============================
 if view_mode == "📈 Financial Insights":
     if not selected_periods:
         st.info("ℹ️ No periods selected or available.")
@@ -878,6 +873,7 @@ if view_mode == "📈 Financial Insights":
     gt_color = "#059669" if grand_total > 0 else "#E11D48" if grand_total < 0 else "#94A3B8"
     gt_cols[-1].markdown(f"<div style='text-align:right; font-weight:700; color:{gt_color}; font-family:monospace; background:#EEF2F9; border-radius:4px; padding:4px 2px; font-size:12px;'>{fmt_currency(grand_total)}</div>", unsafe_allow_html=True)
 
+
 # ===========================
 # LEDGER EDITOR VIEW
 # ===========================
@@ -898,9 +894,6 @@ elif view_mode == "✏️ Ledger Editor":
     st.markdown(filter_summary)
     
     st.markdown("Double-click any period balance to edit. Changes will be reflected in the aggregated total.")
-
-    if st.session_state.dirty: 
-        st.info("⚠️ You have pending edits. Click 'Save to Fabric' to commit.")
 
     # Define dimension columns WITHOUT id for grouping
     dimension_columns = ['Store', 'classification', 'account_name', 'partner_id_name']
@@ -996,19 +989,18 @@ elif view_mode == "✏️ Ledger Editor":
                     required=True
                 )
 
-            # Apply any active editor filters
+            # Apply filters to the pivot table
             filtered_pivot_df = pivot_df.copy()
-            
+
             if 'editor_class' in st.session_state and st.session_state.editor_class != "All":
                 filtered_pivot_df = filtered_pivot_df[filtered_pivot_df['classification'] == st.session_state.editor_class]
-            
             if 'editor_account' in st.session_state and st.session_state.editor_account != "All":
                 filtered_pivot_df = filtered_pivot_df[filtered_pivot_df['account_name'] == st.session_state.editor_account]
-            
             if 'editor_partner' in st.session_state and st.session_state.editor_partner != "All":
                 filtered_pivot_df = filtered_pivot_df[filtered_pivot_df['partner_id_name'] == st.session_state.editor_partner]
 
-            # Display the data editor with periods as columns
+            # Display the editor
+            # Note: key="editor" is vital for Streamlit to track state
             editor_df_widget = st.data_editor(
                 filtered_pivot_df, 
                 key="editor", 
@@ -1019,135 +1011,108 @@ elif view_mode == "✏️ Ledger Editor":
                 column_config=column_config
             )
 
-            # Check for changes in period columns
-            changes_detected = False
+            # 2. Identify Changes
             changes_summary = []
-            
             for idx in editor_df_widget.index:
-                if idx in filtered_pivot_df.index:
-                    # Get the dimension values for this row
-                    store = filtered_pivot_df.loc[idx, 'Store']
-                    classification = filtered_pivot_df.loc[idx, 'classification']
-                    account = filtered_pivot_df.loc[idx, 'account_name']
-                    partner = filtered_pivot_df.loc[idx, 'partner_id_name']
+                for period in period_columns:
+                    original_val = float(filtered_pivot_df.loc[idx, period])
+                    new_val = float(editor_df_widget.loc[idx, period])
                     
-                    for period in period_columns:
-                        if period in editor_df_widget.columns:
-                            original_value = filtered_pivot_df.loc[idx, period]
-                            new_value = editor_df_widget.loc[idx, period]
-                            
-                            if abs(float(original_value) - float(new_value)) > 0.001:
-                                changes_detected = True
-                                changes_summary.append({
-                                    'store': store,
-                                    'classification': classification,
-                                    'account': account,
-                                    'partner': partner,
-                                    'period': period,
-                                    'old_value': original_value,
-                                    'new_value': new_value
-                                })
-            
-            if changes_detected:
-                st.session_state.dirty = True
-                
-                # Show summary of changes
-                with st.expander(f"📝 View {len(changes_summary)} pending changes"):
-                    changes_df = pd.DataFrame(changes_summary)
-                    if not changes_df.empty:
-                        st.dataframe(
-                            changes_df.style.format({
-                                'old_value': '₹{:,.2f}',
-                                'new_value': '₹{:,.2f}'
-                            }),
-                            use_container_width=True
-                        )
-                
-                # Apply the changes to current_df - need to update ALL records matching the dimension combo
-                for change in changes_summary:
-                    # Find all records in current_df that match this dimension combination and period
-                    mask = (st.session_state.current_df['Store'] == change['store']) & \
-                           (st.session_state.current_df['classification'] == change['classification']) & \
-                           (st.session_state.current_df['account_name'] == change['account']) & \
-                           (st.session_state.current_df['partner_id_name'] == change['partner']) & \
-                           (st.session_state.current_df['DisplayPeriod'] == change['period'])
-                    
-                    if mask.any():
-                        # If there are multiple records (different IDs), distribute the total change
-                        record_count = mask.sum()
-                        if record_count > 1:
-                            # Distribute evenly across all records with this dimension combo
-                            per_record_change = (change['new_value'] - change['old_value']) / record_count
-                            st.session_state.current_df.loc[mask, 'Balance'] += per_record_change
-                        else:
-                            # Single record, update directly
-                            st.session_state.current_df.loc[mask, 'Balance'] = change['new_value']
-            else:
-                st.session_state.dirty = False
+                    if abs(original_val - new_val) > 0.001:
+                        changes_summary.append({
+                            'store': editor_df_widget.loc[idx, 'Store'],
+                            'classification': editor_df_widget.loc[idx, 'classification'],
+                            'account': editor_df_widget.loc[idx, 'account_name'],
+                            'partner': editor_df_widget.loc[idx, 'partner_id_name'],
+                            'period': period,
+                            'new_value': new_val
+                        })
 
-    st.write("<br>", unsafe_allow_html=True)
-    col1, col2, col3 = st.columns([6, 2, 2])
+            # 3. Update Dirty State
+            st.session_state.dirty = len(changes_summary) > 0
 
-    with col2:
-        if st.button("🗑️ Discard", use_container_width=True, disabled=not st.session_state.dirty):
-            st.session_state.current_df = st.session_state.original_df.copy()
-            st.session_state.dirty = False
-            st.rerun()
+            if st.session_state.dirty:
+                st.info(f"📝 {len(changes_summary)} pending changes.")
 
-    with col3:
-        if st.button("💾 Save to Fabric", use_container_width=True, disabled=not st.session_state.dirty, type="primary"):
-            baseline_df = st.session_state.original_df
-            working_df = st.session_state.current_df
-            
-            # Find all changed records across all periods
-            merged_df = baseline_df.merge(
-                working_df, 
-                on=['id', 'DisplayPeriod'], 
-                suffixes=('_original', '_new')
-            )
-            changed_records = merged_df[abs(merged_df['Balance_original'] - merged_df['Balance_new']) > 0.001]
-            
-            if not changed_records.empty:
-                with st.spinner(f"Writing {len(changed_records)} updates across periods..."):
-                    success_count, error_count = 0, 0
-                    progress_bar = st.progress(0)
+            st.write("<br>", unsafe_allow_html=True)
+            col1, col2, col3 = st.columns([6, 2, 2])
 
-                    for idx, (_, row) in enumerate(changed_records.iterrows()):
-                        current_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                        variables = {
-                            "id": int(row["id"]),
-                            "balance": float(row["Balance_new"]) if pd.notnull(row["Balance_new"]) else 0.0,
-                            "last_modified_at": current_time,
-                            "last_modified_user": st.session_state.logged_in_user
+            with col2:
+                if st.button("🗑️ Discard", use_container_width=True, disabled=not st.session_state.dirty):
+                    if "editor" in st.session_state:
+                        del st.session_state["editor"]
+                    st.session_state.dirty = False
+                    st.rerun()
+
+            # 4. Save Logic
+            with col3:
+                if st.button("💾 Save to Fabric", use_container_width=True, disabled=not st.session_state.dirty, type="primary"):
+                    with st.spinner("Syncing changes with Fabric..."):
+                        success_count, error_count = 0, 0
+                        
+                        month_map = {
+                            "Jan": "January", "Feb": "February", "Mar": "March", "Apr": "April",
+                            "May": "May", "Jun": "June", "Jul": "July", "Aug": "August",
+                            "Sep": "September", "Oct": "October", "Nov": "November", "Dec": "December"
                         }
-                        try:
-                            response = run_graphql(UPDATE_MUTATION, variables)
-                            if "errors" not in response:
-                                success_count += 1
-                                # Update the original_df with the new balance
-                                mask = (st.session_state.original_df['id'] == row['id']) & \
-                                       (st.session_state.original_df['DisplayPeriod'] == row['DisplayPeriod'])
-                                st.session_state.original_df.loc[mask, 'Balance'] = row['Balance_new']
-                                st.session_state.original_df.loc[mask, 'last_modified_at'] = current_time
-                                st.session_state.original_df.loc[mask, 'last_modified_user'] = st.session_state.logged_in_user
-                            else: 
-                                error_count += 1
-                        except Exception: 
-                            error_count += 1
-                        progress_bar.progress((idx + 1) / len(changed_records))
 
-                    if error_count == 0:
-                        st.session_state.dirty = False
-                        load_data.clear()
-                        st.success(f"✅ {success_count} changes saved successfully across {len(period_columns)} periods!")
-                        st.balloons()
-                        st.rerun()
-                    elif success_count > 0:
-                        st.warning(f"⚠️ {success_count} succeeded, {error_count} failed.")
-                        st.session_state.dirty = False
-                        load_data.clear()
-                    else: 
-                        st.error("❌ All updates failed. Please try again.")
-            else:
-                st.info("No changes detected to save.")
-                st.session_state.dirty = False
+                        # Consistent timestamp for all records in this batch
+                        current_time_fabric = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+                        for change in changes_summary:
+                            # 1. CLEAN YEAR PARSING
+                            p_parts = change['period'].split()
+                            full_month = month_map.get(p_parts[0], p_parts[0])
+                            
+                            raw_year = p_parts[1]
+                            # Handle both "26" and "2026" formats
+                            if len(raw_year) == 2:
+                                full_year = 2000 + int(raw_year)
+                            else:
+                                full_year = int(raw_year)
+                            
+                            # 2. ALIGN DIMENSIONS
+                            # Ensure dimension values are stripped of whitespace to match SQL JOIN logic
+                            variables = {
+                                "year": full_year,
+                                "monthName": full_month,
+                                "store": str(change['store']).strip(),
+                                "balance": float(change['new_value']),
+                                "account_name": str(change['account']).strip(),
+                                "classification": str(change['classification']).strip(),
+                                "partner_id_name": str(change['partner']).strip(),
+                                "last_modified_at": current_time_fabric,
+                                "last_modified_user": st.session_state.logged_in_user
+                            }
+
+                            try:
+                                # The Fabric Stored Procedure logic (provided in previous step)
+                                # will now use these variables to either UPDATE an existing match
+                                # or INSERT if no Store/Account/Year/Month match exists.
+                                response = run_graphql(UPSERT_MUTATION, variables)
+                                
+                                if response and "errors" not in response:
+                                    success_count += 1
+                                else:
+                                    error_msg = response['errors'][0]['message'] if response else "No response"
+                                    st.error(f"Failed to save {change['account']}: {error_msg}")
+                                    error_count += 1
+                            except Exception as e:
+                                st.error(f"Connection error: {str(e)}")
+                                error_count += 1
+
+                        # 3. UI STATE REFRESH
+                        if error_count == 0:
+                            st.success(f"✅ Successfully synced {success_count} records to Fabric!")
+                            # Clear cache so the 'readData' query fetches the newly updated values
+                            load_data.clear() 
+                            
+                            # Clear transient session states
+                            if "editor" in st.session_state:
+                                del st.session_state["editor"]
+                            st.session_state.dirty = False
+                            
+                            # Rerun to show the updated table immediately
+                            st.rerun()
+                        else:
+                            st.warning(f"Process complete: {success_count} saved, {error_count} failed.")
