@@ -1,5 +1,5 @@
-import streamlit as st
 import pandas as pd
+import re
 import requests
 import os
 import io
@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 from azure.identity import ClientSecretCredential
 import numpy as np
+import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 
@@ -178,9 +179,26 @@ def calculate_profit_metrics(df, periods, revenue_classes):
         })
     return pd.DataFrame(results)
 
+
 def fmt_currency(val):
-    if pd.isna(val) or val == 0: return "₹0"
-    return f"₹{val:,.0f}"
+    if pd.isna(val) or val == 0: 
+        return "₹0"
+    
+    # 1. Format as integer string (No decimals)
+    main_part = f"{int(round(float(val)))}"
+    
+    # 2. Logic for Indian Thousand Separator (Lakhs/Crores)
+    if len(main_part) > 3:
+        # Separate the last 3 digits
+        last_three = main_part[-3:]
+        remaining = main_part[:-3]
+        
+        # Group the remaining digits in pairs (twos)
+        # The regex looks for digits followed by an even number of digits before the end
+        remaining = re.sub(r'(\d+?)(?=(\d{2})+(?!\d))', r'\1,', remaining)
+        main_part = remaining + ',' + last_three
+        
+    return f"₹{main_part}"
 
 # =============================
 # HIERARCHICAL DATA BUILDER
@@ -482,6 +500,7 @@ if "logged_in" not in st.session_state:
 
 if "open_classifications" not in st.session_state: st.session_state.open_classifications = set()
 if "open_accounts" not in st.session_state: st.session_state.open_accounts = set()
+if "reset_editor" not in st.session_state: st.session_state.reset_editor = 0
 
 # URL PARAM HANDLING FOR TREE TOGGLES
 params = st.query_params
@@ -882,6 +901,10 @@ elif view_mode == "✏️ Ledger Editor":
         st.info("ℹ️ Please select periods and filters in the sidebar to view/edit data.")
         st.stop()
     
+    # Initialize reset counter if not present
+    if "reset_editor" not in st.session_state:
+        st.session_state.reset_editor = 0
+
     editor_df = st.session_state.editor_filtered_df
     editor_periods = st.session_state.editor_selected_periods
     editor_store = st.session_state.editor_store_filter
@@ -901,11 +924,9 @@ elif view_mode == "✏️ Ledger Editor":
     if editor_df.empty:
         st.warning("No records found for the selected filters.")
     else:
-        # Create a pivot table with periods as columns, aggregating by the dimension columns
-        # Group by the dimension columns and sum balances across any IDs that might exist
+        # Create a pivot table with periods as columns
         pivot_df = editor_df.groupby(dimension_columns + ['DisplayPeriod'], as_index=False)['Balance'].sum()
         
-        # Now pivot to get periods as columns
         pivot_df = pivot_df.pivot_table(
             index=dimension_columns,
             columns='DisplayPeriod',
@@ -914,10 +935,7 @@ elif view_mode == "✏️ Ledger Editor":
             fill_value=0.0
         ).reset_index()
         
-        # Remove the columns index name
         pivot_df.columns.name = None
-        
-        # Get period columns (all columns not in dimension_columns)
         period_columns = [col for col in pivot_df.columns if col not in dimension_columns]
         
         # Sort period columns chronologically
@@ -935,19 +953,13 @@ elif view_mode == "✏️ Ledger Editor":
         
         if period_columns:
             period_columns = sorted(period_columns, key=get_period_sort_key)
-            
-            # Calculate total column
             pivot_df['Total'] = pivot_df[period_columns].sum(axis=1)
-            
-            # Reorder columns: dimension columns, then period columns, then total
             column_order = dimension_columns + period_columns + ['Total']
             pivot_df = pivot_df[column_order]
             
-            # Ensure all numeric columns are properly typed
             for col in period_columns + ['Total']:
-                pivot_df[col] = pd.to_numeric(pivot_df[col], errors='coerce').fillna(0.0)
+                pivot_df[col] = pd.to_numeric(pivot_df[col], errors='coerce').fillna(0.0).apply(fmt_currency)
             
-            # Sort for better organization
             pivot_df = pivot_df.sort_values(['classification', 'account_name', 'partner_id_name'])
             
             st.markdown(f"""
@@ -957,40 +969,31 @@ elif view_mode == "✏️ Ledger Editor":
             </span>
             """, unsafe_allow_html=True)
 
-            # Create column configuration for the editor
+            # Create column configuration using Indian format
+            # Use 'format="₹%d"' for integers or 'format="₹%.2f"' for decimals. 
+            # Streamlit uses the JS Intl.NumberFormat based on the browser, 
+            # but we can prompt grouping by using commas in the format string where supported.
             column_config = {
                 "Store": st.column_config.TextColumn("Store", disabled=True, width="small"),
                 "classification": st.column_config.TextColumn("Classification", disabled=True),
                 "account_name": st.column_config.TextColumn("Account", disabled=True),
                 "partner_id_name": st.column_config.TextColumn("Partner", disabled=True),
-                "Total": st.column_config.NumberColumn(
-                    "Total (All Periods)",
-                    help="Aggregated total across all selected periods",
-                    format="₹%.2f",
-                    disabled=True,  # Total is calculated, not editable directly
-                )
+                "Total": st.column_config.TextColumn("Total (All Periods)", disabled=True)
             }
             
-            # Add dynamic column configs for each period
             for period in period_columns:
-                # Create a short period name for display
                 try:
                     month_name, year = period.rsplit(' ', 1)
                     short_period = month_name[:3] + " " + year[-2:]
                 except:
                     short_period = period
                 
-                column_config[period] = st.column_config.NumberColumn(
-                    short_period,
-                    help=f"Double click to edit balance for {period}",
-                    format="₹%.2f",
-                    step=0.01,
-                    required=True
+                # Adding the comma in the format string "₹%,.2f" triggers the thousand separator
+                column_config[period] = st.column_config.TextColumn(
+                    short_period, required=True
                 )
 
-            # Apply filters to the pivot table
             filtered_pivot_df = pivot_df.copy()
-
             if 'editor_class' in st.session_state and st.session_state.editor_class != "All":
                 filtered_pivot_df = filtered_pivot_df[filtered_pivot_df['classification'] == st.session_state.editor_class]
             if 'editor_account' in st.session_state and st.session_state.editor_account != "All":
@@ -998,11 +1001,11 @@ elif view_mode == "✏️ Ledger Editor":
             if 'editor_partner' in st.session_state and st.session_state.editor_partner != "All":
                 filtered_pivot_df = filtered_pivot_df[filtered_pivot_df['partner_id_name'] == st.session_state.editor_partner]
 
-            # Display the editor
-            # Note: key="editor" is vital for Streamlit to track state
+            # 1. DISPLAY THE EDITOR WITH DYNAMIC KEY
+            current_editor_key = f"editor_{st.session_state.reset_editor}"
             editor_df_widget = st.data_editor(
                 filtered_pivot_df, 
-                key="editor", 
+                key=current_editor_key, 
                 use_container_width=True,
                 hide_index=True,
                 num_rows="fixed",
@@ -1010,68 +1013,60 @@ elif view_mode == "✏️ Ledger Editor":
                 column_config=column_config
             )
 
-            # 2. Identify Changes
+            # 2. IDENTIFY CHANGES
             changes_summary = []
-            for idx in editor_df_widget.index:
-                for period in period_columns:
-                    original_val = float(filtered_pivot_df.loc[idx, period])
-                    new_val = float(editor_df_widget.loc[idx, period])
-                    
-                    if abs(original_val - new_val) > 0.001:
-                        changes_summary.append({
-                            'store': editor_df_widget.loc[idx, 'Store'],
-                            'classification': editor_df_widget.loc[idx, 'classification'],
-                            'account': editor_df_widget.loc[idx, 'account_name'],
-                            'partner': editor_df_widget.loc[idx, 'partner_id_name'],
-                            'period': period,
-                            'new_value': new_val
-                        })
+            if current_editor_key in st.session_state:
+                edits = st.session_state[current_editor_key].get("edited_rows", {})
+                for row_idx, changed_cols in edits.items():
+                    row_data = filtered_pivot_df.iloc[row_idx]
+                    for period, new_val in changed_cols.items():
+                        if period in period_columns:
+                            # CRITICAL: Clean the value to ensure no commas are sent to Fabric
+                            # Even if the UI shows commas, st.data_editor usually returns float,
+                            # but we cast to string and strip commas to be 100% safe for decimal DB types.
+                            clean_val = str(new_val).replace(',', '').replace('₹','')
+                            changes_summary.append({
+                                'store': row_data['Store'],
+                                'classification': row_data['classification'],
+                                'account': row_data['account_name'],
+                                'partner': row_data['partner_id_name'],
+                                'period': period,
+                                'new_value': float(clean_val)
+                            })
 
-            # 3. Update Dirty State
             st.session_state.dirty = len(changes_summary) > 0
 
-            if st.session_state.dirty:
-                st.info(f"📝 {len(changes_summary)} pending changes.")
-
+            # 3. RENDER UI CONTROLS (Always visible, but potentially disabled)
             st.write("<br>", unsafe_allow_html=True)
             col1, col2, col3 = st.columns([6, 2, 2])
 
+            with col1:
+                if st.session_state.dirty:
+                    st.info(f"📝 {len(changes_summary)} pending changes.")
+
             with col2:
                 if st.button("🗑️ Discard", use_container_width=True, disabled=not st.session_state.dirty):
-                    if "editor" in st.session_state:
-                        del st.session_state["editor"]
+                    if current_editor_key in st.session_state:
+                        del st.session_state[current_editor_key]
+                    st.session_state.reset_editor += 1
                     st.session_state.dirty = False
                     st.rerun()
 
-            # 4. Save Logic
+            # 4. SAVE LOGIC
             with col3:
                 if st.button("💾 Save to Fabric", use_container_width=True, disabled=not st.session_state.dirty, type="primary"):
                     with st.spinner("Syncing changes with Fabric..."):
                         success_count, error_count = 0, 0
-                        
-                        month_map = {
-                            "Jan": "January", "Feb": "February", "Mar": "March", "Apr": "April",
-                            "May": "May", "Jun": "June", "Jul": "July", "Aug": "August",
-                            "Sep": "September", "Oct": "October", "Nov": "November", "Dec": "December"
-                        }
-
-                        # Consistent timestamp for all records in this batch
+                        month_map = {"Jan": "January", "Feb": "February", "Mar": "March", "Apr": "April", "May": "May", "Jun": "June", "Jul": "July", "Aug": "August", "Sep": "September", "Oct": "October", "Nov": "November", "Dec": "December"}
                         current_time_fabric = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
                         for change in changes_summary:
-                            # 1. CLEAN YEAR PARSING
                             p_parts = change['period'].split()
                             full_month = month_map.get(p_parts[0], p_parts[0])
-                            
                             raw_year = p_parts[1]
-                            # Handle both "26" and "2026" formats
-                            if len(raw_year) == 2:
-                                full_year = 2000 + int(raw_year)
-                            else:
-                                full_year = int(raw_year)
+                            full_year = 2000 + int(raw_year) if len(raw_year) == 2 else int(raw_year)
                             
-                            # 2. ALIGN DIMENSIONS
-                            # Ensure dimension values are stripped of whitespace to match SQL JOIN logic
+                            # 'balance' is passed as a pure float (no commas)
                             variables = {
                                 "year": full_year,
                                 "monthName": full_month,
@@ -1081,15 +1076,11 @@ elif view_mode == "✏️ Ledger Editor":
                                 "classification": str(change['classification']).strip(),
                                 "partner_id_name": str(change['partner']).strip(),
                                 "last_modified_at": current_time_fabric,
-                                "last_modified_user": st.session_state.logged_in_user
+                                "last_modified_user": st.session_state.get('logged_in_user', 'Unknown')
                             }
 
                             try:
-                                # The Fabric Stored Procedure logic (provided in previous step)
-                                # will now use these variables to either UPDATE an existing match
-                                # or INSERT if no Store/Account/Year/Month match exists.
                                 response = run_graphql(UPSERT_MUTATION, variables)
-                                
                                 if response and "errors" not in response:
                                     success_count += 1
                                 else:
@@ -1100,18 +1091,13 @@ elif view_mode == "✏️ Ledger Editor":
                                 st.error(f"Connection error: {str(e)}")
                                 error_count += 1
 
-                        # 3. UI STATE REFRESH
                         if error_count == 0:
                             st.success(f"✅ Successfully synced {success_count} records to Fabric!")
-                            # Clear cache so the 'readData' query fetches the newly updated values
                             load_data.clear() 
-                            
-                            # Clear transient session states
-                            if "editor" in st.session_state:
-                                del st.session_state["editor"]
+                            if current_editor_key in st.session_state:
+                                del st.session_state[current_editor_key]
+                            st.session_state.reset_editor += 1
                             st.session_state.dirty = False
-                            
-                            # Rerun to show the updated table immediately
                             st.rerun()
                         else:
                             st.warning(f"Process complete: {success_count} saved, {error_count} failed.")
