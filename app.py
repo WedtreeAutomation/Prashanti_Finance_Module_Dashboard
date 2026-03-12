@@ -1,3 +1,4 @@
+import streamlit as st
 import pandas as pd
 import re
 import requests
@@ -7,7 +8,6 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 from azure.identity import ClientSecretCredential
 import numpy as np
-import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 
@@ -73,10 +73,6 @@ st.markdown("""
     .bg-expense { background: linear-gradient(135deg, #F43F5E 0%, #BE123C 100%); }
     .bg-profit { background: linear-gradient(135deg, #2563EB 0%, #1D4ED8 100%); }
     .bg-margin { background: linear-gradient(135deg, #7C3AED 0%, #5B21B6 100%); }
-
-    /* Compact Headers */
-    .compact-header { font-size: 11px; font-weight: 600; color: #64748B; text-align: right; white-space: nowrap; }
-    .compact-header-left { font-size: 11px; font-weight: 600; color: #64748B; text-align: left; }
 
     /* Sidebar Theme */
     section[data-testid="stSidebar"] { background-color: #FFFFFF !important; border-right: 1px solid #E8EDF4; }
@@ -179,7 +175,6 @@ def calculate_profit_metrics(df, periods, revenue_classes):
         })
     return pd.DataFrame(results)
 
-
 def fmt_currency(val):
     if pd.isna(val) or val == 0: 
         return "₹0"
@@ -194,7 +189,6 @@ def fmt_currency(val):
         remaining = main_part[:-3]
         
         # Group the remaining digits in pairs (twos)
-        # The regex looks for digits followed by an even number of digits before the end
         remaining = re.sub(r'(\d+?)(?=(\d{2})+(?!\d))', r'\1,', remaining)
         main_part = remaining + ',' + last_three
         
@@ -206,36 +200,31 @@ def fmt_currency(val):
 def build_hierarchy_data(report_df, periods):
     hierarchy = {}
     
-    # Define the desired order with more flexible matching
-    # This list should match EXACTLY how they appear in your database
     classification_order = [
-        'Income',
+        'Net Sales',
         'Other Income',
+        'Cost of Goods Sold (COGS)',
         'Employee cost',
-        'Rent & Utilities',           # Exact match from your data
-        'Marketing & Advertisment',    # Note: 'Advertisment' (missing 'e') as in your data
-        'Admin Exp',        'Finance cost',
-        'Other Expenses',
-        'Supplier Payments',           # Exact match from your data
-        'Purchase Expense',
+        'Rent and Utilities',            
+        'Marketing and Advertisment',    
+        'Admin Expenses',
         'Logistics',
-        'Expense' 
+        'Other Expenses',
+        'Finance cost',
+        'Supplier Payments',            
+        'Purchase Expense',
+        'Depreciation'
     ]
     
-    # Get unique classifications from the data
     unique_classifications = report_df['classification'].dropna().unique()
     
-    # Create a custom sort key function
     def get_classification_order(cls):
         try:
             return classification_order.index(cls)
         except ValueError:
-            # If classification not in our predefined list, print it for debugging
             print(f"Classification not in order list: '{cls}'")
-            # Put it at the end, sorted alphabetically
             return len(classification_order) + (sum(ord(c) for c in cls) if cls else 0)
     
-    # Sort classifications according to the defined order
     sorted_classifications = sorted(unique_classifications, key=get_classification_order)
     
     for classification in sorted_classifications:
@@ -245,7 +234,6 @@ def build_hierarchy_data(report_df, periods):
             cls_totals[p] = cls_df[cls_df['DisplayPeriod'] == p]['Balance'].sum()
         
         accounts = {}
-        # Sort accounts alphabetically within each classification
         for account in sorted(cls_df['account_name'].dropna().unique()):
             acc_df = cls_df[cls_df['account_name'] == account]
             acc_totals = {}
@@ -253,7 +241,6 @@ def build_hierarchy_data(report_df, periods):
                 acc_totals[p] = acc_df[acc_df['DisplayPeriod'] == p]['Balance'].sum()
             
             partners = {}
-            # Sort partners alphabetically within each account
             for partner in sorted(acc_df['partner_id_name'].dropna().unique()):
                 prt_df = acc_df[acc_df['partner_id_name'] == partner]
                 prt_totals = {}
@@ -281,7 +268,6 @@ def build_excel_report(hierarchy, periods, store_filter="All", expand_all=False,
     ws = wb.active
     ws.title = "P&L Statement"
 
-    # Crucial for Excel grouping: Summary rows are ABOVE detail rows
     ws.sheet_properties.outlinePr.summaryBelow = False
     
     DARK_BLUE, MID_BLUE, LIGHT_BLUE, WHITE = "0F2044", "1A3A6B", "EEF2F9", "FFFFFF"
@@ -326,29 +312,28 @@ def build_excel_report(hierarchy, periods, store_filter="All", expand_all=False,
     # --- Data Population with Outline Grouping ---
     current_row = header_row + 1
     
-    # Define the desired order matching your database exactly
     classification_order = [
-        'Income',
+        'Net Sales',
         'Other Income',
+        'Cost of Goods Sold (COGS)',
         'Employee cost',
-        'Rent & Utilities',           # Exact match from your data
-        'Marketing & Advertisment',    # Note: 'Advertisment' (missing 'e') as in your data
-        'Admin Exp',        'Finance cost',
-        'Other Expenses',
-        'Supplier Payments',           # Exact match from your data
-        'Purchase Expense',
+        'Rent and Utilities',            
+        'Marketing and Advertisment',    
+        'Admin Expenses',
         'Logistics',
-        'Expense'
+        'Other Expenses',
+        'Finance cost',
+        'Supplier Payments',            
+        'Purchase Expense',
+        'Depreciation'
     ]
     
     def get_classification_order(cls):
         try:
             return classification_order.index(cls)
         except ValueError:
-            # If classification not in our predefined list, put it at the end
             return len(classification_order) + (sum(ord(c) for c in cls) if cls else 0)
     
-    # Sort classifications according to the defined order
     sorted_classifications = sorted(hierarchy.keys(), key=get_classification_order)
     
     for cls_name in sorted_classifications:
@@ -490,7 +475,6 @@ def build_excel_report(hierarchy, periods, store_filter="All", expand_all=False,
 # PERSISTENT SESSION STATE
 # =============================
 if "logged_in" not in st.session_state:
-    # Read query parameter to persist auth state across browser refreshes
     if st.query_params.get("auth") == "active":
         st.session_state.logged_in = True
         st.session_state.logged_in_user = st.query_params.get("user", "")
@@ -502,7 +486,10 @@ if "open_classifications" not in st.session_state: st.session_state.open_classif
 if "open_accounts" not in st.session_state: st.session_state.open_accounts = set()
 if "reset_editor" not in st.session_state: st.session_state.reset_editor = 0
 
-# URL PARAM HANDLING FOR TREE TOGGLES
+# New session state for global HTML table expand/collapse
+if "expand_all_mode" not in st.session_state: 
+    st.session_state.expand_all_mode = False
+
 params = st.query_params
 if "toggle_cls" in params:
     key = params["toggle_cls"]
@@ -511,7 +498,6 @@ if "toggle_cls" in params:
         st.session_state.open_accounts = {a for a in st.session_state.open_accounts if not a.startswith(f"acc_{key.replace('cls_', '')}__")}
     else:
         st.session_state.open_classifications.add(key)
-    # Remove toggle param specifically to avoid clearing the active auth state
     del st.query_params["toggle_cls"]
     st.rerun()
 
@@ -537,7 +523,6 @@ if not st.session_state.logged_in:
                 if username == os.getenv("APP_USERNAME") and password == os.getenv("APP_PASSWORD"):
                     st.session_state.logged_in = True
                     st.session_state.logged_in_user = username
-                    # Write token to URL to survive page refresh
                     st.query_params["auth"] = "active"
                     st.query_params["user"] = username
                     st.rerun()
@@ -598,7 +583,7 @@ if df.empty:
     st.warning("No data retrieved from the database.")
     st.stop()
 
-REVENUE_CLASSES = ['Income', 'Other Income']
+REVENUE_CLASSES = ['Net Sales', 'Other Income']
 
 # =============================
 # SIDEBAR NAVIGATION
@@ -611,7 +596,7 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
 
-    view_mode = st.radio("Navigation", ["📈 Financial Insights", "✏️ Ledger Editor"], label_visibility="collapsed")
+    view_mode = st.radio("Navigation", ["📈 Financial Insights", "✏️ Ledger Editor", "💰 Budget vs Actual"], label_visibility="collapsed")
     st.markdown("<hr>", unsafe_allow_html=True)
 
     if view_mode == "📈 Financial Insights":
@@ -638,7 +623,6 @@ with st.sidebar:
     elif view_mode == "✏️ Ledger Editor":
         st.markdown("<p style='color:#0F2044 !important; font-weight:600; font-size:1rem;'>📊 Report Filters</p>", unsafe_allow_html=True)
         
-        # Add date range selection for editor
         editor_date_range_type = st.radio("Range Type", ["📅 Single/Multiple Months", "📆 Financial Year"], 
                                          horizontal=True, key="editor_range_type")
     
@@ -659,41 +643,35 @@ with st.sidebar:
             else:
                 editor_selected_periods = []
     
-        # Store filter for editor
         editor_store_filter = st.selectbox("🏢 Store", ["All"] + sorted(df['Store'].dropna().astype(str).unique()), 
                                           key="editor_store")
         
         st.markdown("<hr>", unsafe_allow_html=True)
         st.markdown("<p style='color:#0F2044 !important; font-weight:600; font-size:1rem;'>✏️ Editor Filters</p>", unsafe_allow_html=True)
         
-        # Get filtered data based on selected periods and store
         if editor_selected_periods:
             editor_filtered_df = df[df['DisplayPeriod'].isin(editor_selected_periods)].copy()
             if editor_store_filter != "All":
                 editor_filtered_df = editor_filtered_df[editor_filtered_df['Store'] == editor_store_filter]
             
-            # Classification filter
             if not editor_filtered_df.empty:
                 editor_class = st.selectbox("Class", ["All"] + sorted(editor_filtered_df['classification'].dropna().astype(str).unique()), 
                                            key="editor_class")
                 if editor_class != "All":
                     editor_filtered_df = editor_filtered_df[editor_filtered_df['classification'] == editor_class]
                 
-                # Account filter
                 if not editor_filtered_df.empty:
                     editor_account = st.selectbox("Account", ["All"] + sorted(editor_filtered_df['account_name'].dropna().astype(str).unique()), 
                                                  key="editor_account")
                     if editor_account != "All":
                         editor_filtered_df = editor_filtered_df[editor_filtered_df['account_name'] == editor_account]
                     
-                    # Partner filter
                     if not editor_filtered_df.empty:
                         editor_partner = st.selectbox("Partner", ["All"] + sorted(editor_filtered_df['partner_id_name'].dropna().astype(str).unique()), 
                                                      key="editor_partner")
                         if editor_partner != "All":
                             editor_filtered_df = editor_filtered_df[editor_filtered_df['partner_id_name'] == editor_partner]
             
-            # Store the filtered dataframe and selected periods in session state
             st.session_state.editor_filtered_df = editor_filtered_df
             st.session_state.editor_selected_periods = editor_selected_periods
             st.session_state.editor_store_filter = editor_store_filter
@@ -702,11 +680,22 @@ with st.sidebar:
             st.session_state.editor_selected_periods = []
             st.warning("No periods selected.")
     
+    elif view_mode == "💰 Budget vs Actual":
+        st.markdown("<p style='color:#0F2044 !important; font-weight:600; font-size:1rem;'>📅 Budget Period</p>", unsafe_allow_html=True)
+        
+        budget_base_period = st.selectbox(
+            "Select Base Period", 
+            period_list, 
+            key="budget_base_period"
+        )
+        
+        st.session_state.budget_selected_period = budget_base_period
+
     st.markdown("<hr>", unsafe_allow_html=True)
     if st.button("🚪 Sign Out", width = 'stretch', type="secondary"):
         st.session_state.logged_in = False
         st.session_state.logged_in_user = ""
-        st.query_params.clear() # Clears URL auth state token
+        st.query_params.clear() 
         st.cache_data.clear()
         st.rerun()
 
@@ -730,6 +719,7 @@ if view_mode == "📈 Financial Insights":
         st.info("ℹ️ No data available for the selected filters.")
         st.stop()
 
+    # --- KPI CARDS ---
     latest_period = selected_periods[0]
     latest_data = report_df[report_df['DisplayPeriod'] == latest_period]
     total_revenue = latest_data[latest_data['classification'].isin(REVENUE_CLASSES)]['Balance'].sum()
@@ -755,16 +745,19 @@ if view_mode == "📈 Financial Insights":
 
     st.write("<br>", unsafe_allow_html=True)
 
+    # --- CHART ---
     profit_df = calculate_profit_metrics(report_df, selected_periods, REVENUE_CLASSES)
     fig = go.Figure()
     fig.add_trace(go.Bar(x=profit_df['DisplayPeriod'], y=profit_df['Revenue'], name='Revenue', marker_color='#0AB370', opacity=0.8))
     fig.add_trace(go.Bar(x=profit_df['DisplayPeriod'], y=profit_df['Expenses'], name='Expenses', marker_color='#F43F5E', opacity=0.8))
     fig.add_trace(go.Scatter(x=profit_df['DisplayPeriod'], y=profit_df['Profit'], mode='lines+markers', name='Net Profit', line=dict(color='#2563EB', width=3, shape='spline'), marker=dict(size=8, color='#1D4ED8'), yaxis='y'))
-    fig.update_layout(title=dict(text='<b>Revenue, Expenses & Net Profit</b>', font=dict(size=15, color='#0F2044')), barmode='group', plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', margin=dict(l=40, r=40, t=50, b=40), yaxis=dict(gridcolor='#E2E8F0', title='Amount (₹)', tickformat='₹,.0f'), xaxis=dict(showline=True, linecolor='#CBD5E1', tickfont=dict(size=10)), hovermode='x unified', legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, bgcolor='rgba(255,255,255,0.9)', font=dict(size=10)))
-    st.plotly_chart(fig, width = 'stretch')
+    fig.update_layout(title=dict(text='<b>Revenue, Expenses & Net Profit</b>', font=dict(size=18, color='#0F2044')), barmode='group', plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', margin=dict(l=40, r=40, t=50, b=40), yaxis=dict(gridcolor='#E2E8F0', title='Amount (₹)', tickformat='₹,.0f'), xaxis=dict(showline=True, linecolor='#CBD5E1', tickfont=dict(size=10)), hovermode='x unified', legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, bgcolor='rgba(255,255,255,0.9)', font=dict(size=10)))
+    st.plotly_chart(fig, width='stretch')
 
     st.markdown("---")
     
+    # --- TABLE SECTION ---
+    # --- TABLE SECTION ---
     hierarchy = build_hierarchy_data(report_df, selected_periods)
 
     col1, col2 = st.columns([3, 2])
@@ -773,135 +766,171 @@ if view_mode == "📈 Financial Insights":
     with col2:
         export_col1, export_col2, export_col3 = st.columns([1, 1, 1])
         with export_col1:
-            if st.button("⊞ Expand All", width = 'stretch'):
-                for cls_name in hierarchy.keys():
-                    st.session_state.open_classifications.add(f"cls_{cls_name}")
-                    for acc_name in hierarchy[cls_name]['accounts'].keys():
-                        st.session_state.open_accounts.add(f"acc_{cls_name}__{acc_name}")
+            if st.button("⊞ Expand All", width='stretch'):
+                st.session_state.expand_all_mode = True
                 st.rerun()
         with export_col2:
-            if st.button("Collapse All", width = 'stretch'):
-                st.session_state.open_classifications.clear()
-                st.session_state.open_accounts.clear()
+            if st.button("Collapse All", width='stretch'):
+                st.session_state.expand_all_mode = False
                 st.rerun()
         with export_col3:
-            expand_all = len(st.session_state.open_classifications) > 0 or len(st.session_state.open_accounts) > 0
-            # Pass UI state directly into the Excel builder
-            excel_bytes = build_excel_report(
-                hierarchy, selected_periods, store_filter, 
-                expand_all=expand_all,
+            # 1. Generate the Excel file in memory using your helper function
+            excel_file = build_excel_report(
+                hierarchy=hierarchy, 
+                periods=selected_periods, 
+                store_filter=store_filter, 
+                expand_all=st.session_state.get('expand_all_mode', False),
                 open_classifications=st.session_state.open_classifications,
                 open_accounts=st.session_state.open_accounts
             )
+            
+            # 2. Use the native download button
             st.download_button(
-                label="📥 Export", data=excel_bytes,
-                file_name=f"PL_Report_{store_filter}_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                label="📥 Export",
+                data=excel_file,
+                file_name=f"PnL_Statement_{store_filter}_{datetime.now().strftime('%Y%m%d')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                width = 'stretch', type="primary"
+                type="primary",
+                use_container_width=True  # Streamlit's equivalent to width='stretch'
             )
 
-    st.markdown("<p style='color:#64748B; font-size:0.8rem; margin-bottom:0.5rem;'>Click on Classification rows to expand accounts. Click on Account rows to expand partners.</p>", unsafe_allow_html=True)
+    # ==========================================
+    # HIGH-PERFORMANCE HTML/CSS GRID TABLE
+    # ==========================================
+    
+    num_periods = len(selected_periods)
+    # FIX 1: Strict 350px on first column prevents long text from misaligning rows
+    grid_template = f"350px repeat({num_periods}, minmax(130px, 1fr)) minmax(140px, 1fr)"
+    
+    html_parts = []
+    
+    html_parts.append(f"""
+    <style>
+    /* Container handles the scroll */
+    .pnl-container {{ width: 100%; overflow-x: auto; border: 1px solid #CBD5E1; border-radius: 8px; background: #FFFFFF; padding-bottom: 10px; }}
+    
+    /* FIX 2: Wrapper guarantees background stretches 100% whether small or large */
+    .pnl-table-wrapper {{ min-width: 100%; width: max-content; display: flex; flex-direction: column; }}
+    
+    /* Rows span exactly the wrapper's width */
+    .pnl-row {{ 
+        display: grid; 
+        grid-template-columns: {grid_template}; 
+        border-bottom: 1px solid #E2E8F0; 
+        align-items: center; 
+        transition: background 0.2s; 
+        width: 100%;
+        background-color: inherit;
+    }}
+    .pnl-row:hover {{ background-color: #F8FAFC; }}
+    
+    .pnl-header {{ background-color: #0F2044 !important; color: white; font-weight: bold; position: sticky; top: 0; z-index: 10; font-size: 12px; letter-spacing: 0.5px; }}
+    .pnl-cell {{ padding: 10px 12px; white-space: nowrap; font-size: 13px; }}
+    
+    /* Sticky first column with truncation (ellipsis) so grid doesn't break */
+    .pnl-cell:first-child {{ 
+        position: sticky; 
+        left: 0; 
+        background-color: inherit; 
+        z-index: 5; 
+        border-right: 1px solid #E2E8F0; 
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }}
+    .pnl-header .pnl-cell:first-child {{ background-color: #0F2044; z-index: 15; }}
+    
+    .align-right {{ text-align: right; }}
+    
+    /* Typography & Colors */
+    .val-pos {{ color: #059669; font-weight: 600; font-family: 'DM Mono', monospace; }}
+    .val-neg {{ color: #E11D48; font-weight: 600; font-family: 'DM Mono', monospace; }}
+    .val-tot {{ color: #0F2044; font-weight: 800; font-family: 'DM Mono', monospace; background: #EEF2F9; border-radius: 4px; padding: 3px 6px; display: inline-block; }}
+    
+    /* Hierarchical Styling */
+    .lvl-1 {{ font-weight: 700; color: #0F2044; background: #F1F5F9; cursor: pointer; }}
+    .lvl-2 {{ font-weight: 600; color: #334155; background: #FFFFFF; cursor: pointer; }}
+    .lvl-3 {{ color: #64748B; background: #FFFFFF; }}
+    
+    /* Accordion Details/Summary Reset */
+    details > summary {{ list-style: none; outline: none; }}
+    details > summary::-webkit-details-marker {{ display: none; }}
+    .arrow {{ display: inline-block; width: 18px; font-size: 11px; transition: transform 0.2s; color: #64748B; margin-right: 4px; }}
+    details[open] > summary .arrow {{ transform: rotate(90deg); color: #0F2044; }}
+    </style>
+    
+    <div class='pnl-container'>
+        <div class='pnl-table-wrapper'>
+    """)
 
-    num_cols = len(selected_periods) + 2 
-    col_widths = [3] + [1] * len(selected_periods) + [1]
-    
-    header_cols = st.columns(col_widths)
-    header_cols[0].markdown("<div class='compact-header-left'>Account Hierarchy</div>", unsafe_allow_html=True)
-    for i, p in enumerate(selected_periods):
-        short_p = p[:3] + " " + p[-2:] if len(p) > 5 else p
-        header_cols[i+1].markdown(f"<div class='compact-header'>{short_p}</div>", unsafe_allow_html=True)
-    header_cols[-1].markdown("<div class='compact-header'>TOTAL</div>", unsafe_allow_html=True)
-    st.markdown("<hr style='margin: 2px 0 8px 0; border-color:#E2E8F0;'>", unsafe_allow_html=True)
-    
+    # Build Header Row
+    html_parts.append("<div class='pnl-row pnl-header'>")
+    html_parts.append("<div class='pnl-cell'>PARTICULARS</div>")
+    for p in selected_periods:
+        short_p = p[:3] + " " + p[-2:]
+        html_parts.append(f"<div class='pnl-cell align-right'>{short_p.upper()}</div>")
+    html_parts.append("<div class='pnl-cell align-right'>TOTAL</div></div>")
+
+    # Global Expand State
+    open_attr = "open" if st.session_state.get('expand_all_mode', False) else ""
+
+    # Build Data Rows (Added 'title' attributes for hover tooltips)
     for cls_name, cls_data in hierarchy.items():
-        cls_key = f"cls_{cls_name}"
-        cls_open = cls_key in st.session_state.open_classifications
-        cls_total = sum(cls_data['totals'].values())
-        
-        row_cols = st.columns(col_widths)
-        arrow = "▼" if cls_open else "▶"
-        
-        with row_cols[0]:
-            btn_label = f"{arrow} 📂 {cls_name}"
-            if st.button(btn_label, key=f"btn_{cls_key}", width = 'stretch'):
-                if cls_open:
-                    st.session_state.open_classifications.discard(cls_key)
-                    st.session_state.open_accounts = {a for a in st.session_state.open_accounts if not a.startswith(f"acc_{cls_name}__")}
-                else: st.session_state.open_classifications.add(cls_key)
-                st.rerun()
-        
-        for i, p in enumerate(selected_periods):
+        # -- CLASSIFICATION LEVEL (L1) --
+        html_parts.append(f"<details {open_attr}><summary class='pnl-row lvl-1'>")
+        html_parts.append(f"<div class='pnl-cell' title='{cls_name.upper()}'><span class='arrow'>▶</span> 📂 {cls_name.upper()}</div>")
+        for p in selected_periods:
             v = cls_data['totals'].get(p, 0)
-            color = "#059669" if v > 0 else "#E11D48" if v < 0 else "#94A3B8"
-            row_cols[i+1].markdown(f"<div style='text-align:right; font-weight:600; color:{color}; padding-top:4px; font-family:monospace; font-size:11px;'>{fmt_currency(v)}</div>", unsafe_allow_html=True)
+            color_cls = "val-pos" if v >= 0 else "val-neg"
+            html_parts.append(f"<div class='pnl-cell align-right {color_cls}'>{fmt_currency(v)}</div>")
         
-        tc = "#059669" if cls_total > 0 else "#E11D48" if cls_total < 0 else "#94A3B8"
-        row_cols[-1].markdown(f"<div style='text-align:right; font-weight:700; color:{tc}; padding-top:4px; font-family:monospace; font-size:11px; background:#EEF2F9; border-radius:4px; padding:4px 2px;'>{fmt_currency(cls_total)}</div>", unsafe_allow_html=True)
-        st.markdown("<div style='height:2px; background:#EEF2F9; border-radius:1px; margin-bottom:2px;'></div>", unsafe_allow_html=True)
-        
-        if cls_open:
-            for acc_name, acc_data in cls_data['accounts'].items():
-                acc_key = f"acc_{cls_name}__{acc_name}"
-                acc_open = acc_key in st.session_state.open_accounts
-                acc_total = sum(acc_data['totals'].values())
-                
-                acc_cols = st.columns(col_widths)
-                acc_arrow = "▼" if acc_open else "▶"
-                
-                with acc_cols[0]:
-                    acc_btn_label = f"　　{acc_arrow} 📄 {acc_name}"
-                    if st.button(acc_btn_label, key=f"btn_{acc_key}", width = 'stretch'):
-                        if acc_open: st.session_state.open_accounts.discard(acc_key)
-                        else: st.session_state.open_accounts.add(acc_key)
-                        st.rerun()
-                
-                for i, p in enumerate(selected_periods):
-                    v = acc_data['totals'].get(p, 0)
-                    color = "#059669" if v > 0 else "#E11D48" if v < 0 else "#94A3B8"
-                    acc_cols[i+1].markdown(f"<div style='text-align:right; color:{color}; font-weight:500; padding-top:4px; font-family:monospace; font-size:10px;'>{fmt_currency(v)}</div>", unsafe_allow_html=True)
-                
-                at_color = "#059669" if acc_total > 0 else "#E11D48" if acc_total < 0 else "#94A3B8"
-                acc_cols[-1].markdown(f"<div style='text-align:right; font-weight:600; color:{at_color}; padding-top:4px; font-family:monospace; font-size:10px;'>{fmt_currency(acc_total)}</div>", unsafe_allow_html=True)
-                st.markdown("<div style='height:1px; background:#F1F5F9; margin-bottom:1px;'></div>", unsafe_allow_html=True)
-                
-                if acc_open:
-                    for partner_name, prt_totals in acc_data['partners'].items():
-                        prt_total = sum(prt_totals.values())
-                        prt_cols = st.columns(col_widths)
-                        
-                        prt_cols[0].markdown(f"<div style='padding-left:100px; color:#64748B; font-size:9px; padding-top:3px;'>· {partner_name[:25]}{'...' if len(partner_name) > 25 else ''}</div>", unsafe_allow_html=True)
-                        for i, p in enumerate(selected_periods):
-                            v = prt_totals.get(p, 0)
-                            color = "#059669" if v > 0 else "#E11D48" if v < 0 else "#94A3B8"
-                            prt_cols[i+1].markdown(f"<div style='text-align:right; color:{color}; font-size:9px; padding-top:3px; font-family:monospace;'>{fmt_currency(v)}</div>", unsafe_allow_html=True)
-                        
-                        pt_color = "#059669" if prt_total > 0 else "#E11D48" if prt_total < 0 else "#94A3B8"
-                        prt_cols[-1].markdown(f"<div style='text-align:right; color:{pt_color}; font-size:9px; padding-top:3px; font-family:monospace;'>{fmt_currency(prt_total)}</div>", unsafe_allow_html=True)
-                        st.markdown("<div style='height:1px; background:#F8FAFC; margin-bottom:1px;'></div>", unsafe_allow_html=True)
-    
-    st.markdown("<hr style='border-color:#CBD5E1; margin: 6px 0;'>", unsafe_allow_html=True)
-    gt_cols = st.columns(col_widths)
-    gt_cols[0].markdown("<div style='font-weight:700; color:#0F2044; font-size:12px; padding-top:2px;'>📊 Grand Total</div>", unsafe_allow_html=True)
-    for i, p in enumerate(selected_periods):
-        gt_v = sum(cls_data['totals'].get(p, 0) for cls_data in hierarchy.values())
-        color = "#059669" if gt_v > 0 else "#E11D48" if gt_v < 0 else "#94A3B8"
-        gt_cols[i+1].markdown(f"<div style='text-align:right; font-weight:700; color:{color}; font-family:monospace; padding-top:2px; font-size:12px;'>{fmt_currency(gt_v)}</div>", unsafe_allow_html=True)
-    
-    grand_total = sum(sum(cls_data['totals'].values()) for cls_data in hierarchy.values())
-    gt_color = "#059669" if grand_total > 0 else "#E11D48" if grand_total < 0 else "#94A3B8"
-    gt_cols[-1].markdown(f"<div style='text-align:right; font-weight:700; color:{gt_color}; font-family:monospace; background:#EEF2F9; border-radius:4px; padding:4px 2px; font-size:12px;'>{fmt_currency(grand_total)}</div>", unsafe_allow_html=True)
+        cls_tot = sum(cls_data['totals'].values())
+        html_parts.append(f"<div class='pnl-cell align-right'><span class='val-tot'>{fmt_currency(cls_tot)}</span></div>")
+        html_parts.append("</summary>")
 
+        for acc_name, acc_data in cls_data['accounts'].items():
+            # -- ACCOUNT LEVEL (L2) --
+            html_parts.append(f"<details {open_attr}><summary class='pnl-row lvl-2'>")
+            html_parts.append(f"<div class='pnl-cell' title='{acc_name}' style='padding-left: 28px;'><span class='arrow'>▶</span> 📄 {acc_name}</div>")
+            for p in selected_periods:
+                v = acc_data['totals'].get(p, 0)
+                color_cls = "val-pos" if v >= 0 else "val-neg"
+                html_parts.append(f"<div class='pnl-cell align-right {color_cls}'>{fmt_currency(v)}</div>")
+            
+            acc_tot = sum(acc_data['totals'].values())
+            color_cls = "val-pos" if acc_tot >= 0 else "val-neg"
+            html_parts.append(f"<div class='pnl-cell align-right {color_cls}' style='font-weight: 800;'>{fmt_currency(acc_tot)}</div>")
+            html_parts.append("</summary>")
 
+            for partner_name, prt_totals in acc_data['partners'].items():
+                # -- PARTNER LEVEL (L3 - Leaf) --
+                html_parts.append("<div class='pnl-row lvl-3'>")
+                html_parts.append(f"<div class='pnl-cell' title='{partner_name}' style='padding-left: 65px;'>• {partner_name}</div>")
+                for p in selected_periods:
+                    v = prt_totals.get(p, 0)
+                    color_cls = "val-pos" if v >= 0 else "val-neg"
+                    html_parts.append(f"<div class='pnl-cell align-right {color_cls}'>{fmt_currency(v)}</div>")
+                
+                prt_tot = sum(prt_totals.values())
+                color_cls = "val-pos" if prt_tot >= 0 else "val-neg"
+                html_parts.append(f"<div class='pnl-cell align-right {color_cls}'>{fmt_currency(prt_tot)}</div>")
+                html_parts.append("</div>")
+
+            html_parts.append("</details>") # Close Account
+        html_parts.append("</details>") # Close Classification
+
+    html_parts.append("</div></div>") # Close wrapper, then container
+
+    # Render the entire table instantly
+    st.markdown("".join(html_parts), unsafe_allow_html=True)
 # ===========================
 # LEDGER EDITOR VIEW
 # ===========================
 elif view_mode == "✏️ Ledger Editor":
-    # Check if we have filtered data from sidebar
     if not hasattr(st.session_state, 'editor_filtered_df') or st.session_state.editor_filtered_df.empty:
         st.info("ℹ️ Please select periods and filters in the sidebar to view/edit data.")
         st.stop()
     
-    # Initialize reset counter if not present
     if "reset_editor" not in st.session_state:
         st.session_state.reset_editor = 0
 
@@ -909,7 +938,6 @@ elif view_mode == "✏️ Ledger Editor":
     editor_periods = st.session_state.editor_selected_periods
     editor_store = st.session_state.editor_store_filter
     
-    # Display summary of current filter selection
     filter_summary = f"**Current View:** {len(editor_periods)} period(s): {', '.join(editor_periods)}"
     if editor_store != "All":
         filter_summary += f" | Store: {editor_store}"
@@ -917,14 +945,11 @@ elif view_mode == "✏️ Ledger Editor":
     
     st.markdown("Double-click any period balance to edit. Changes will be reflected in the aggregated total.")
 
-    # Define dimension columns WITHOUT id for grouping
     dimension_columns = ['Store', 'classification', 'account_name', 'partner_id_name']
     
-    # First, verify we have data
     if editor_df.empty:
         st.warning("No records found for the selected filters.")
     else:
-        # Create a pivot table with periods as columns
         pivot_df = editor_df.groupby(dimension_columns + ['DisplayPeriod'], as_index=False)['Balance'].sum()
         
         pivot_df = pivot_df.pivot_table(
@@ -938,7 +963,6 @@ elif view_mode == "✏️ Ledger Editor":
         pivot_df.columns.name = None
         period_columns = [col for col in pivot_df.columns if col not in dimension_columns]
         
-        # Sort period columns chronologically
         def get_period_sort_key(period):
             try:
                 month_name, year = period.rsplit(' ', 1)
@@ -969,12 +993,8 @@ elif view_mode == "✏️ Ledger Editor":
             </span>
             """, unsafe_allow_html=True)
 
-            # Create column configuration using Indian format
-            # Use 'format="₹%d"' for integers or 'format="₹%.2f"' for decimals. 
-            # Streamlit uses the JS Intl.NumberFormat based on the browser, 
-            # but we can prompt grouping by using commas in the format string where supported.
             column_config = {
-                "Store": st.column_config.TextColumn("Store", disabled=True, width="small"),
+                "Store": st.column_config.TextColumn("Store", disabled=True, width="stretch"),
                 "classification": st.column_config.TextColumn("Classification", disabled=True),
                 "account_name": st.column_config.TextColumn("Account", disabled=True),
                 "partner_id_name": st.column_config.TextColumn("Partner", disabled=True),
@@ -988,7 +1008,6 @@ elif view_mode == "✏️ Ledger Editor":
                 except:
                     short_period = period
                 
-                # Adding the comma in the format string "₹%,.2f" triggers the thousand separator
                 column_config[period] = st.column_config.TextColumn(
                     short_period, required=True
                 )
@@ -1001,19 +1020,17 @@ elif view_mode == "✏️ Ledger Editor":
             if 'editor_partner' in st.session_state and st.session_state.editor_partner != "All":
                 filtered_pivot_df = filtered_pivot_df[filtered_pivot_df['partner_id_name'] == st.session_state.editor_partner]
 
-            # 1. DISPLAY THE EDITOR WITH DYNAMIC KEY
             current_editor_key = f"editor_{st.session_state.reset_editor}"
             editor_df_widget = st.data_editor(
                 filtered_pivot_df, 
                 key=current_editor_key, 
-                use_container_width=True,
+                width='stretch',
                 hide_index=True,
                 num_rows="fixed",
                 disabled=['Store', 'classification', 'account_name', 'partner_id_name', 'Total'],
                 column_config=column_config
             )
 
-            # 2. IDENTIFY CHANGES
             changes_summary = []
             if current_editor_key in st.session_state:
                 edits = st.session_state[current_editor_key].get("edited_rows", {})
@@ -1021,9 +1038,6 @@ elif view_mode == "✏️ Ledger Editor":
                     row_data = filtered_pivot_df.iloc[row_idx]
                     for period, new_val in changed_cols.items():
                         if period in period_columns:
-                            # CRITICAL: Clean the value to ensure no commas are sent to Fabric
-                            # Even if the UI shows commas, st.data_editor usually returns float,
-                            # but we cast to string and strip commas to be 100% safe for decimal DB types.
                             clean_val = str(new_val).replace(',', '').replace('₹','')
                             changes_summary.append({
                                 'store': row_data['Store'],
@@ -1036,7 +1050,6 @@ elif view_mode == "✏️ Ledger Editor":
 
             st.session_state.dirty = len(changes_summary) > 0
 
-            # 3. RENDER UI CONTROLS (Always visible, but potentially disabled)
             st.write("<br>", unsafe_allow_html=True)
             col1, col2, col3 = st.columns([6, 2, 2])
 
@@ -1045,16 +1058,15 @@ elif view_mode == "✏️ Ledger Editor":
                     st.info(f"📝 {len(changes_summary)} pending changes.")
 
             with col2:
-                if st.button("🗑️ Discard", use_container_width=True, disabled=not st.session_state.dirty):
+                if st.button("🗑️ Discard", width='stretch', disabled=not st.session_state.dirty):
                     if current_editor_key in st.session_state:
                         del st.session_state[current_editor_key]
                     st.session_state.reset_editor += 1
                     st.session_state.dirty = False
                     st.rerun()
 
-            # 4. SAVE LOGIC
             with col3:
-                if st.button("💾 Save to Fabric", use_container_width=True, disabled=not st.session_state.dirty, type="primary"):
+                if st.button("💾 Save to Fabric", width='stretch', disabled=not st.session_state.dirty, type="primary"):
                     with st.spinner("Syncing changes with Fabric..."):
                         success_count, error_count = 0, 0
                         month_map = {"Jan": "January", "Feb": "February", "Mar": "March", "Apr": "April", "May": "May", "Jun": "June", "Jul": "July", "Aug": "August", "Sep": "September", "Oct": "October", "Nov": "November", "Dec": "December"}
@@ -1066,7 +1078,6 @@ elif view_mode == "✏️ Ledger Editor":
                             raw_year = p_parts[1]
                             full_year = 2000 + int(raw_year) if len(raw_year) == 2 else int(raw_year)
                             
-                            # 'balance' is passed as a pure float (no commas)
                             variables = {
                                 "year": full_year,
                                 "monthName": full_month,
@@ -1101,3 +1112,255 @@ elif view_mode == "✏️ Ledger Editor":
                             st.rerun()
                         else:
                             st.warning(f"Process complete: {success_count} saved, {error_count} failed.")
+
+# ===========================
+# BUDGETING VIEW
+# ===========================
+elif view_mode == "💰 Budget vs Actual":
+    if "budget_base_period" not in st.session_state:
+        st.info("ℹ️ Please select a Base Period in the sidebar to view budgeting data.")
+        st.stop()
+
+    base_period = st.session_state.budget_base_period
+
+    classification_order = [
+        'Net Sales', 'Other Income', 'Cost of Goods Sold (COGS)', 'Employee cost',
+        'Rent and Utilities', 'Marketing and Advertisment', 'Admin Expenses',
+        'Logistics', 'Other Expenses', 'Finance cost', 'Supplier Payments',
+        'Purchase Expense', 'Depreciation'
+    ]
+
+    st.markdown("""
+    <style>
+        [data-testid="stDataFrame"] th p {
+            font-weight: 800 !important;
+            text-transform: uppercase !important;
+            text-align: center !important;
+            color: #1E293B !important;
+        }
+        .super-kpi-card {
+            border-radius: 12px;
+            padding: 22px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+            margin-bottom: 20px;
+        }
+        
+        .card-revenue { 
+            background: linear-gradient(90deg, #F0FDF4 0%, #FFFFFF 100%);
+            border: 1px solid #DCFCE7;
+            border-left: 6px solid #22C55E !important; 
+        } 
+        
+        .card-expense { 
+            background: linear-gradient(90deg, #FEF2F2 0%, #FFFFFF 100%);
+            border: 1px solid #FEE2E2;
+            border-left: 6px solid #EF4444 !important; 
+        } 
+        
+        .super-kpi-header {
+            font-size: 0.8rem;
+            font-weight: 700;
+            color: #475569;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            margin-bottom: 18px;
+        }
+        .partition-container {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .partition {
+            flex: 1;
+            text-align: center;
+            border-right: 1px solid rgba(0,0,0,0.05);
+        }
+        .partition:last-child { border-right: none; }
+        
+        .partition-label { font-size: 0.65rem; color: #64748B; font-weight: 700; margin-bottom: 6px; }
+        .partition-value { font-size: 1.15rem; font-weight: 700; color: #0F172A; font-family: 'DM Mono', monospace; }
+        
+        .text-revenue { color: #15803D !important; font-weight: 800; }
+        .text-expense { color: #B91C1C !important; font-weight: 800; }
+        .text-neutral { color: #854D0E !important; background: #FEF9C3; padding: 2px 8px; border-radius: 4px; }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    BUDGET_QUERY = "query budgetData { executesp_readBudgetData { Particulars Month Year Budget } }"
+    
+    @st.cache_data(ttl=600)
+    def fetch_budget_data():
+        response = run_graphql(BUDGET_QUERY)
+        return pd.DataFrame(response["data"]["executesp_readBudgetData"]) if response else pd.DataFrame()
+
+    raw_budget_df = fetch_budget_data()
+    actual_data = df[df['DisplayPeriod'] == base_period].copy()
+    if 'editor_store_filter' in st.session_state and st.session_state.editor_store_filter != "All":
+        actual_data = actual_data[actual_data['Store'] == st.session_state.editor_store_filter]
+    
+    actual_summary = actual_data.groupby('classification')['Balance'].sum().reset_index()
+    actual_summary.rename(columns={'classification': 'Particulars', 'Balance': 'Actual'}, inplace=True)
+
+    if not raw_budget_df.empty:
+        raw_budget_df['DisplayPeriod'] = raw_budget_df['Month'] + " " + raw_budget_df['Year'].astype(str)
+        period_budget_df = raw_budget_df[raw_budget_df['DisplayPeriod'] == base_period]
+        
+        # Safely handle periods with zero budget data
+        if not period_budget_df.empty:
+            budget_pivot = period_budget_df.pivot_table(index='Particulars', values='Budget', aggfunc='sum').reset_index()
+            pivot_df = pd.merge(pd.DataFrame({'Particulars': classification_order}), budget_pivot, on='Particulars', how='left').fillna(0.0)
+        else:
+            pivot_df = pd.DataFrame({'Particulars': classification_order, 'Budget': 0.0})
+    else:
+        pivot_df = pd.DataFrame({'Particulars': classification_order, 'Budget': 0.0})
+
+    # Merge actuals
+    pivot_df = pd.merge(pivot_df, actual_summary, on='Particulars', how='left').fillna(0.0)
+
+    # Failsafe: Ensure 'Actual' column exists even if actual_summary was completely empty
+    if 'Actual' not in pivot_df.columns:
+        pivot_df['Actual'] = 0.0
+
+    # ==========================================
+
+    def get_val(df, part, col):
+        return df.loc[df['Particulars'] == part, col].sum()
+
+    rev_b = get_val(pivot_df, 'Net Sales', 'Budget') + get_val(pivot_df, 'Other Income', 'Budget')
+    rev_a = get_val(pivot_df, 'Net Sales', 'Actual') + get_val(pivot_df, 'Other Income', 'Actual')
+    exp_b = get_val(pivot_df, 'Cost of Goods Sold (COGS)', 'Budget')
+    exp_a = get_val(pivot_df, 'Cost of Goods Sold (COGS)', 'Actual')
+    op_exp_b = (get_val(pivot_df, 'Employee cost', 'Budget') + 
+                get_val(pivot_df, 'Rent and Utilities', 'Budget') + 
+                get_val(pivot_df, 'Marketing and Advertisment', 'Budget') + 
+                get_val(pivot_df, 'Admin Expenses', 'Budget') + 
+                get_val(pivot_df, 'Logistics', 'Budget') +
+                get_val(pivot_df, 'Other Expenses', 'Budget')
+    )
+    op_exp_a = (get_val(pivot_df, 'Employee cost', 'Actual') + 
+                get_val(pivot_df, 'Rent and Utilities', 'Actual') + 
+                get_val(pivot_df, 'Marketing and Advertisment', 'Actual') + 
+                get_val(pivot_df, 'Admin Expenses', 'Actual') + 
+                get_val(pivot_df, 'Logistics', 'Actual') +
+                get_val(pivot_df, 'Other Expenses', 'Actual')
+    )
+    fin_cost_b = get_val(pivot_df, 'Finance cost', 'Budget')
+    fin_cost_a = get_val(pivot_df, 'Finance cost', 'Actual')
+
+    final_rows = [
+        'Net Sales', 'Other Income',
+        {'Particulars': 'TOTAL REVENUE', 'Budget': rev_b, 'Actual': rev_a, 'is_calc': True},
+        'Cost of Goods Sold (COGS)',
+        {'Particulars': 'TOTAL EXPENSE', 'Budget': exp_b, 'Actual': exp_a, 'is_calc': True},
+        {'Particulars': 'GROSS PROFIT', 'Budget': rev_b - exp_b, 'Actual': rev_a - exp_a, 'is_calc': True},
+        'Employee cost', 'Rent and Utilities', 'Marketing and Advertisment', 
+        'Admin Expenses', 'Logistics', 'Other Expenses',
+        {'Particulars': 'TOTAL OPERATING EXPENSE', 'Budget': op_exp_b, 'Actual': op_exp_a, 'is_calc': True},
+        {'Particulars': 'OPERATING PROFIT (EBIT)', 'Budget': rev_b - exp_b - op_exp_b, 'Actual': rev_a - exp_a - op_exp_a, 'is_calc': True},
+        'Finance cost', 'Depreciation',
+        {'Particulars': 'PBT', 'Budget': rev_b - exp_b - op_exp_b - fin_cost_b, 'Actual': rev_a - exp_a - op_exp_a - fin_cost_a, 'is_calc': True},
+        'Supplier Payments', 'Purchase Expense'
+    ]
+
+    processed_data = []
+    for item in final_rows:
+        if isinstance(item, dict):
+            processed_data.append(item)
+        else:
+            row_match = pivot_df[pivot_df['Particulars'] == item]
+            b_val = row_match['Budget'].values[0] if not row_match.empty else 0.0
+            a_val = row_match['Actual'].values[0] if not row_match.empty else 0.0
+            processed_data.append({'Particulars': item, 'Budget': b_val, 'Actual': a_val, 'is_calc': False})
+
+    table_df = pd.DataFrame(processed_data)
+    table_df['Change %'] = table_df.apply(lambda r: ((r['Actual'] - r['Budget']) / r['Budget'] * 100) if r['Budget'] != 0 else (100.0 if r['Actual'] > 0 else 0.0), axis=1)
+
+    st.subheader(f"🎯 Performance Analytics: {base_period}")
+
+    rev_diff = rev_a - rev_b
+    rev_var_pct = (rev_diff / rev_b * 100) if rev_b != 0 else 0
+    rev_text_class = "text-revenue" if rev_diff > 0 else "text-expense" if rev_diff < 0 else "text-neutral"
+
+    total_planned_exp = op_exp_b + exp_b + fin_cost_b
+    total_actual_exp = op_exp_a + exp_a + fin_cost_a
+    exp_diff = total_actual_exp - total_planned_exp
+    exp_var_pct = (exp_diff / total_planned_exp * 100) if total_planned_exp != 0 else 0
+    exp_text_class = "text-expense" if exp_diff > 0 else "text-revenue" if exp_diff < 0 else "text-neutral"
+
+    col_left, col_right = st.columns(2)
+
+    with col_left:
+        st.markdown(f"""
+        <div class="super-kpi-card card-revenue">
+            <div class="super-kpi-header">📊 Revenue Performance</div>
+            <div class="partition-container">
+                <div class="partition">
+                    <div class="partition-label">TARGET REVENUE</div>
+                    <div class="partition-value">{fmt_currency(rev_b)}</div>
+                </div>
+                <div class="partition">
+                    <div class="partition-label">ACTUAL REVENUE</div>
+                    <div class="partition-value">{fmt_currency(rev_a)}</div>
+                </div>
+                <div class="partition">
+                    <div class="partition-label">VARIANCE %</div>
+                    <div class="partition-value {rev_text_class}">{rev_var_pct:+.1f}%</div>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with col_right:
+        st.markdown(f"""
+        <div class="super-kpi-card card-expense">
+            <div class="super-kpi-header">💸 Budget Utilization</div>
+            <div class="partition-container">
+                <div class="partition">
+                    <div class="partition-label">PLANNED BUDGET</div>
+                    <div class="partition-value">{fmt_currency(total_planned_exp)}</div>
+                </div>
+                <div class="partition">
+                    <div class="partition-label">EXPENDITURE TO DATE</div>
+                    <div class="partition-value">{fmt_currency(total_actual_exp)}</div>
+                </div>
+                <div class="partition">
+                    <div class="partition-label">VARIANCE %</div>
+                    <div class="partition-value {exp_text_class}">{exp_var_pct:+.1f}%</div>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.write("<br>", unsafe_allow_html=True)
+
+    def style_rows(row):
+        styles = [''] * len(row)
+        v = row['Change %']
+        if v > 0: styles[row.index.get_loc('Change %')] = 'background-color: #FEF2F2; color: #991B1B;'
+        elif v < 0: styles[row.index.get_loc('Change %')] = 'background-color: #F0FDF4; color: #166534;'
+        else: styles[row.index.get_loc('Change %')] = 'background-color: #FEF9C3; color: #854D0E;'
+        
+        if row['is_calc']:
+            return ['font-weight: 800; background-color: #F8FAFC; color: #1E293B; border-top: 2px solid #334155;'] * len(row)
+        return styles
+
+    styler = table_df.style.apply(style_rows, axis=1)
+    styler = styler.format({
+        'Budget': lambda x: fmt_currency(x),
+        'Actual': lambda x: fmt_currency(x),
+        'Change %': '{:+.1f}%'
+    })
+
+    st.dataframe(
+        styler,
+        width='stretch',
+        hide_index=True,
+        height=(len(table_df) * 36) + 40,
+        column_config={
+            "Particulars": st.column_config.TextColumn("PARTICULARS", width="large"),
+            "Budget": st.column_config.TextColumn("BUDGET", width="medium"),
+            "Actual": st.column_config.TextColumn("ACTUAL", width="medium"),
+            "Change %": st.column_config.TextColumn("CHANGE %", width="small"),
+            "is_calc": None
+        }
+    )
