@@ -1,8 +1,8 @@
-import streamlit as st
 import pandas as pd
 import re
 import requests
 import os
+import streamlit as st
 import io
 from datetime import datetime, timezone
 from dotenv import load_dotenv
@@ -197,23 +197,21 @@ def fmt_currency(val):
 # =============================
 # HIERARCHICAL DATA BUILDER
 # =============================
-def build_hierarchy_data(report_df, periods):
+def build_hierarchy_data(report_df, grouping_list, group_by='DisplayPeriod'):
+    """
+    Modified to support dynamic grouping (e.g., by Period or by Store).
+    
+    :param report_df: The source DataFrame
+    :param grouping_list: List of columns to show (e.g., selected_periods or unique_stores)
+    :param group_by_col: The column name in report_df to filter against (default 'DisplayPeriod')
+    """
     hierarchy = {}
     
     classification_order = [
-        'Net Sales',
-        'Other Income',
-        'Cost of Goods Sold (COGS)',
-        'Employee cost',
-        'Rent and Utilities',            
-        'Marketing and Advertisment',    
-        'Admin Expenses',
-        'Logistics',
-        'Other Expenses',
-        'Finance cost',
-        'Supplier Payments',            
-        'Purchase Expense',
-        'Depreciation'
+        'Net Sales', 'Other Income', 'Cost of Goods Sold (COGS)', 'Employee cost',
+        'Rent and Utilities', 'Marketing and Advertisment', 'Admin Expenses',
+        'Logistics', 'Other Expenses', 'Finance cost', 'Supplier Payments',
+        'Purchase Expense', 'Depreciation'
     ]
     
     unique_classifications = report_df['classification'].dropna().unique()
@@ -222,7 +220,6 @@ def build_hierarchy_data(report_df, periods):
         try:
             return classification_order.index(cls)
         except ValueError:
-            print(f"Classification not in order list: '{cls}'")
             return len(classification_order) + (sum(ord(c) for c in cls) if cls else 0)
     
     sorted_classifications = sorted(unique_classifications, key=get_classification_order)
@@ -230,27 +227,29 @@ def build_hierarchy_data(report_df, periods):
     for classification in sorted_classifications:
         cls_df = report_df[report_df['classification'] == classification]
         cls_totals = {}
-        for p in periods:
-            cls_totals[p] = cls_df[cls_df['DisplayPeriod'] == p]['Balance'].sum()
+        for item in grouping_list:
+            # Dynamically filter by the provided column name
+            cls_totals[item] = cls_df[cls_df[group_by] == item]['Balance'].sum()
         
         accounts = {}
         for account in sorted(cls_df['account_name'].dropna().unique()):
             acc_df = cls_df[cls_df['account_name'] == account]
             acc_totals = {}
-            for p in periods:
-                acc_totals[p] = acc_df[acc_df['DisplayPeriod'] == p]['Balance'].sum()
+            for item in grouping_list:
+                acc_totals[item] = acc_df[acc_df[group_by] == item]['Balance'].sum()
             
             partners = {}
             for partner in sorted(acc_df['partner_id_name'].dropna().unique()):
                 prt_df = acc_df[acc_df['partner_id_name'] == partner]
                 prt_totals = {}
-                for p in periods:
-                    prt_totals[p] = prt_df[prt_df['DisplayPeriod'] == p]['Balance'].sum()
+                for item in grouping_list:
+                    prt_totals[item] = prt_df[prt_df[group_by] == item]['Balance'].sum()
                 partners[partner] = prt_totals
             
             accounts[account] = {'totals': acc_totals, 'partners': partners}
         
         hierarchy[classification] = {'totals': cls_totals, 'accounts': accounts}
+        
     return hierarchy
 
 # =============================
@@ -508,6 +507,13 @@ if "toggle_acc" in params:
     del st.query_params["toggle_acc"]
     st.rerun()
 
+# New separate session states for independent table control
+if "expand_pnl" not in st.session_state: 
+    st.session_state.expand_pnl = False
+
+if "expand_store" not in st.session_state: 
+    st.session_state.expand_store = False
+
 # =============================
 # APP FLOW: LOGGED OUT
 # =============================
@@ -756,8 +762,6 @@ if view_mode == "📈 Financial Insights":
 
     st.markdown("---")
     
-    # --- TABLE SECTION ---
-    # --- TABLE SECTION ---
     hierarchy = build_hierarchy_data(report_df, selected_periods)
 
     col1, col2 = st.columns([3, 2])
@@ -766,53 +770,46 @@ if view_mode == "📈 Financial Insights":
     with col2:
         export_col1, export_col2, export_col3 = st.columns([1, 1, 1])
         with export_col1:
-            if st.button("⊞ Expand All", width='stretch'):
-                st.session_state.expand_all_mode = True
+            if st.button("⊞ Expand All", key="pnl_expand_btn", width='stretch'):
+                st.session_state.expand_pnl = True  
                 st.rerun()
         with export_col2:
-            if st.button("Collapse All", width='stretch'):
-                st.session_state.expand_all_mode = False
+            if st.button("Collapse All", key="pnl_collapse_btn", width='stretch'):
+                st.session_state.expand_pnl = False 
                 st.rerun()
         with export_col3:
-            # 1. Generate the Excel file in memory using your helper function
             excel_file = build_excel_report(
                 hierarchy=hierarchy, 
                 periods=selected_periods, 
                 store_filter=store_filter, 
-                expand_all=st.session_state.get('expand_all_mode', False),
+                expand_all=st.session_state.get('expand_pnl', False),
                 open_classifications=st.session_state.open_classifications,
                 open_accounts=st.session_state.open_accounts
             )
             
-            # 2. Use the native download button
             st.download_button(
                 label="📥 Export",
                 data=excel_file,
                 file_name=f"PnL_Statement_{store_filter}_{datetime.now().strftime('%Y%m%d')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 type="primary",
-                use_container_width=True  # Streamlit's equivalent to width='stretch'
+                key="pnl_export_main_btn", 
+                use_container_width=True
             )
 
     # ==========================================
     # HIGH-PERFORMANCE HTML/CSS GRID TABLE
     # ==========================================
-    
     num_periods = len(selected_periods)
-    # FIX 1: Strict 350px on first column prevents long text from misaligning rows
     grid_template = f"350px repeat({num_periods}, minmax(130px, 1fr)) minmax(140px, 1fr)"
+
+    pnl_open_attr = "open" if st.session_state.expand_pnl else ""
     
     html_parts = []
-    
     html_parts.append(f"""
     <style>
-    /* Container handles the scroll */
     .pnl-container {{ width: 100%; overflow-x: auto; border: 1px solid #CBD5E1; border-radius: 8px; background: #FFFFFF; padding-bottom: 10px; }}
-    
-    /* FIX 2: Wrapper guarantees background stretches 100% whether small or large */
     .pnl-table-wrapper {{ min-width: 100%; width: max-content; display: flex; flex-direction: column; }}
-    
-    /* Rows span exactly the wrapper's width */
     .pnl-row {{ 
         display: grid; 
         grid-template-columns: {grid_template}; 
@@ -823,11 +820,8 @@ if view_mode == "📈 Financial Insights":
         background-color: inherit;
     }}
     .pnl-row:hover {{ background-color: #F8FAFC; }}
-    
     .pnl-header {{ background-color: #0F2044 !important; color: white; font-weight: bold; position: sticky; top: 0; z-index: 10; font-size: 12px; letter-spacing: 0.5px; }}
     .pnl-cell {{ padding: 10px 12px; white-space: nowrap; font-size: 13px; }}
-    
-    /* Sticky first column with truncation (ellipsis) so grid doesn't break */
     .pnl-cell:first-child {{ 
         position: sticky; 
         left: 0; 
@@ -839,10 +833,174 @@ if view_mode == "📈 Financial Insights":
         white-space: nowrap;
     }}
     .pnl-header .pnl-cell:first-child {{ background-color: #0F2044; z-index: 15; }}
+    .align-right {{ text-align: right; }}
+    .val-pos {{ color: #059669; font-weight: 600; font-family: 'DM Mono', monospace; }}
+    .val-neg {{ color: #E11D48; font-weight: 600; font-family: 'DM Mono', monospace; }}
+    .val-tot {{ color: #0F2044; font-weight: 800; font-family: 'DM Mono', monospace; background: #EEF2F9; border-radius: 4px; padding: 3px 6px; display: inline-block; }}
+    .lvl-1 {{ font-weight: 700; color: #0F2044; background: #F1F5F9; cursor: pointer; }}
+    .lvl-2 {{ font-weight: 600; color: #334155; background: #FFFFFF; cursor: pointer; }}
+    .lvl-3 {{ color: #64748B; background: #FFFFFF; }}
+    details > summary {{ list-style: none; outline: none; }}
+    details > summary::-webkit-details-marker {{ display: none; }}
+    .arrow {{ display: inline-block; width: 18px; font-size: 11px; transition: transform 0.2s; color: #64748B; margin-right: 4px; }}
+    details[open] > summary .arrow {{ transform: rotate(90deg); color: #0F2044; }}
+    </style>
+    
+    <div class='pnl-container'>
+        <div class='pnl-table-wrapper'>
+    """)
+
+    html_parts.append("<div class='pnl-row pnl-header'>")
+    html_parts.append("<div class='pnl-cell'>PARTICULARS</div>")
+    for p in selected_periods:
+        short_p = p[:3] + " " + p[-2:]
+        html_parts.append(f"<div class='pnl-cell align-right'>{short_p.upper()}</div>")
+    html_parts.append("<div class='pnl-cell align-right'>TOTAL</div></div>")
+
+    # FIX: Use pnl specific state
+    pnl_open_attr = "open" if st.session_state.get('expand_pnl', False) else ""
+
+    for cls_name, cls_data in hierarchy.items():
+        html_parts.append(f"<details {pnl_open_attr}><summary class='pnl-row lvl-1'>")
+        html_parts.append(f"<div class='pnl-cell' title='{cls_name.upper()}'><span class='arrow'>▶</span> 📂 {cls_name.upper()}</div>")
+        for p in selected_periods:
+            v = cls_data['totals'].get(p, 0)
+            color_cls = "val-pos" if v >= 0 else "val-neg"
+            html_parts.append(f"<div class='pnl-cell align-right {color_cls}'>{fmt_currency(v)}</div>")
+        
+        cls_tot = sum(cls_data['totals'].values())
+        html_parts.append(f"<div class='pnl-cell align-right'><span class='val-tot'>{fmt_currency(cls_tot)}</span></div>")
+        html_parts.append("</summary>")
+
+        for acc_name, acc_data in cls_data['accounts'].items():
+            html_parts.append(f"<details {pnl_open_attr}><summary class='pnl-row lvl-2'>")
+            html_parts.append(f"<div class='pnl-cell' title='{acc_name}' style='padding-left: 28px;'><span class='arrow'>▶</span> 📄 {acc_name}</div>")
+            for p in selected_periods:
+                v = acc_data['totals'].get(p, 0)
+                color_cls = "val-pos" if v >= 0 else "val-neg"
+                html_parts.append(f"<div class='pnl-cell align-right {color_cls}'>{fmt_currency(v)}</div>")
+            
+            acc_tot = sum(acc_data['totals'].values())
+            color_cls = "val-pos" if acc_tot >= 0 else "val-neg"
+            html_parts.append(f"<div class='pnl-cell align-right {color_cls}' style='font-weight: 800;'>{fmt_currency(acc_tot)}</div>")
+            html_parts.append("</summary>")
+
+            for partner_name, prt_totals in acc_data['partners'].items():
+                html_parts.append("<div class='pnl-row lvl-3'>")
+                html_parts.append(f"<div class='pnl-cell' title='{partner_name}' style='padding-left: 65px;'>• {partner_name}</div>")
+                for p in selected_periods:
+                    v = prt_totals.get(p, 0)
+                    color_cls = "val-pos" if v >= 0 else "val-neg"
+                    html_parts.append(f"<div class='pnl-cell align-right {color_cls}'>{fmt_currency(v)}</div>")
+                
+                prt_tot = sum(prt_totals.values())
+                color_cls = "val-pos" if prt_tot >= 0 else "val-neg"
+                html_parts.append(f"<div class='pnl-cell align-right {color_cls}'>{fmt_currency(prt_tot)}</div>")
+                html_parts.append("</div>")
+
+            html_parts.append("</details>") 
+        html_parts.append("</details>") 
+
+    html_parts.append("</div></div>") 
+    st.markdown("".join(html_parts), unsafe_allow_html=True)
+    st.write("<br>", unsafe_allow_html=True)
+    st.markdown("---")
+
+    # 1. Prepare Data for Store Comparison
+    # Check if a full year is selected (Assuming 12 months = Full FY)
+    is_full_fy = len(selected_periods) >= 12 
+
+    if is_full_fy:
+        # IF FULL FY: Use all data (this aggregates all 12 months per store)
+        comp_df = report_df.copy()
+        display_period_label = "Financial Year"
+    else:
+        # ELSE: Use only the first selected month (Base Period)
+        base_period = selected_periods[0]
+        comp_df = report_df[report_df['DisplayPeriod'] == base_period].copy()
+        display_period_label = base_period
+
+    relevant_stores = sorted(comp_df['Store'].unique().tolist())
+    store_hierarchy = build_hierarchy_data(comp_df, relevant_stores, group_by='Store')
+
+    # 2. UI Header & Independent Buttons
+    col1, col2 = st.columns([3, 2])
+    with col1:
+        st.markdown(f"### 🏪 Store Comparison ({display_period_label})")
+    with col2:
+        s_exp1, s_exp2, s_exp3 = st.columns([1, 1, 1])
+        with s_exp1:
+            if st.button("⊞ Expand All", key="btn_store_expand", width='stretch'):
+                st.session_state.expand_store = True
+                st.rerun()
+        with s_exp2:
+            if st.button("Collapse All", key="btn_store_collapse", width='stretch'):
+                st.session_state.expand_store = False
+                st.rerun()
+        with s_exp3:
+            store_excel = build_excel_report(
+                hierarchy=store_hierarchy, 
+                periods=relevant_stores, 
+                store_filter="Comparison", 
+                expand_all=st.session_state.get('expand_store', False)
+            )
+            st.download_button(
+                label="📥 Export",
+                data=store_excel,
+                file_name=f"Store_Comparison_{display_period_label}_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="btn_store_export",
+                use_container_width=True
+            )
+
+    # 3. Render Table with Independent State
+    # FIX: Use store specific state
+    store_open_attr = "open" if st.session_state.expand_store else ""
+
+    num_stores = len(relevant_stores)
+    store_grid_template = f"350px repeat({num_stores}, 150px) 150px"
+
+    store_html = []
+    store_html.append(f"""
+    <style>
+    /* Container handles the scroll */
+    .store-container {{ width: 100%; overflow-x: auto; border: 1px solid #CBD5E1; border-radius: 8px; background: #FFFFFF; padding-bottom: 10px; }}
+    
+    /* Wrapper guarantees background stretches 100% */
+    .store-table-wrapper {{ min-width: 100%; width: max-content; display: flex; flex-direction: column; }}
+    
+    /* Rows span exactly the wrapper's width */
+    .store-row {{ 
+        display: grid; 
+        grid-template-columns: {store_grid_template}; 
+        border-bottom: 1px solid #E2E8F0; 
+        align-items: center; 
+        transition: background 0.2s; 
+        width: 100%;
+        background-color: inherit;
+    }}
+    .store-row:hover {{ background-color: #F8FAFC; }}
+    
+    /* Header styling */
+    .store-header {{ background-color: #0F2044 !important; color: white; font-weight: bold; position: sticky; top: 0; z-index: 10; font-size: 12px; letter-spacing: 0.5px; }}
+    .store-cell {{ padding: 10px 12px; white-space: nowrap; font-size: 13px; }}
+    
+    /* Sticky first column fix: background-color must be solid, not inherit, to prevent overlap */
+    .store-cell:first-child {{ 
+        position: sticky; 
+        left: 0; 
+        background-color: #FFFFFF; 
+        z-index: 5; 
+        border-right: 1px solid #E2E8F0; 
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }}
+    .store-header .store-cell:first-child {{ background-color: #0F2044; z-index: 15; }}
     
     .align-right {{ text-align: right; }}
     
-    /* Typography & Colors */
+    /* Value Typography */
     .val-pos {{ color: #059669; font-weight: 600; font-family: 'DM Mono', monospace; }}
     .val-neg {{ color: #E11D48; font-weight: 600; font-family: 'DM Mono', monospace; }}
     .val-tot {{ color: #0F2044; font-weight: 800; font-family: 'DM Mono', monospace; background: #EEF2F9; border-radius: 4px; padding: 3px 6px; display: inline-block; }}
@@ -859,70 +1017,48 @@ if view_mode == "📈 Financial Insights":
     details[open] > summary .arrow {{ transform: rotate(90deg); color: #0F2044; }}
     </style>
     
-    <div class='pnl-container'>
-        <div class='pnl-table-wrapper'>
+    <div class='store-container'>
+        <div class='store-table-wrapper'>
     """)
 
-    # Build Header Row
-    html_parts.append("<div class='pnl-row pnl-header'>")
-    html_parts.append("<div class='pnl-cell'>PARTICULARS</div>")
-    for p in selected_periods:
-        short_p = p[:3] + " " + p[-2:]
-        html_parts.append(f"<div class='pnl-cell align-right'>{short_p.upper()}</div>")
-    html_parts.append("<div class='pnl-cell align-right'>TOTAL</div></div>")
+    store_html.append("<div class='store-row store-header'><div class='store-cell'>PARTICULARS</div>")
+    for s in relevant_stores:
+        store_html.append(f"<div class='store-cell align-right'>{s.upper()}</div>")
+    store_html.append("<div class='store-cell align-right'>TOTAL</div></div>")
 
-    # Global Expand State
-    open_attr = "open" if st.session_state.get('expand_all_mode', False) else ""
-
-    # Build Data Rows (Added 'title' attributes for hover tooltips)
-    for cls_name, cls_data in hierarchy.items():
-        # -- CLASSIFICATION LEVEL (L1) --
-        html_parts.append(f"<details {open_attr}><summary class='pnl-row lvl-1'>")
-        html_parts.append(f"<div class='pnl-cell' title='{cls_name.upper()}'><span class='arrow'>▶</span> 📂 {cls_name.upper()}</div>")
-        for p in selected_periods:
-            v = cls_data['totals'].get(p, 0)
-            color_cls = "val-pos" if v >= 0 else "val-neg"
-            html_parts.append(f"<div class='pnl-cell align-right {color_cls}'>{fmt_currency(v)}</div>")
-        
-        cls_tot = sum(cls_data['totals'].values())
-        html_parts.append(f"<div class='pnl-cell align-right'><span class='val-tot'>{fmt_currency(cls_tot)}</span></div>")
-        html_parts.append("</summary>")
+    for cls_name, cls_data in store_hierarchy.items():
+        store_html.append(f"<details {store_open_attr}><summary class='store-row lvl-1'>")
+        store_html.append(f"<div class='store-cell'><span class='arrow'>▶</span> 📂 {cls_name.upper()}</div>")
+        for s in relevant_stores:
+            v = cls_data['totals'].get(s, 0)
+            store_html.append(f"<div class='store-cell align-right {'val-pos' if v >= 0 else 'val-neg'}'>{fmt_currency(v)}</div>")
+        store_html.append(f"<div class='store-cell align-right'><span class='val-tot'>{fmt_currency(sum(cls_data['totals'].values()))}</span></div>")
+        store_html.append("</summary>")
 
         for acc_name, acc_data in cls_data['accounts'].items():
-            # -- ACCOUNT LEVEL (L2) --
-            html_parts.append(f"<details {open_attr}><summary class='pnl-row lvl-2'>")
-            html_parts.append(f"<div class='pnl-cell' title='{acc_name}' style='padding-left: 28px;'><span class='arrow'>▶</span> 📄 {acc_name}</div>")
-            for p in selected_periods:
-                v = acc_data['totals'].get(p, 0)
-                color_cls = "val-pos" if v >= 0 else "val-neg"
-                html_parts.append(f"<div class='pnl-cell align-right {color_cls}'>{fmt_currency(v)}</div>")
-            
-            acc_tot = sum(acc_data['totals'].values())
-            color_cls = "val-pos" if acc_tot >= 0 else "val-neg"
-            html_parts.append(f"<div class='pnl-cell align-right {color_cls}' style='font-weight: 800;'>{fmt_currency(acc_tot)}</div>")
-            html_parts.append("</summary>")
+            store_html.append(f"<details {store_open_attr}><summary class='store-row lvl-2'>")
+            store_html.append(f"<div class='store-cell' style='padding-left: 28px;'><span class='arrow'>▶</span> 📄 {acc_name}</div>")
+            for s in relevant_stores:
+                v = acc_data['totals'].get(s, 0)
+                store_html.append(f"<div class='store-cell align-right {'val-pos' if v >= 0 else 'val-neg'}'>{fmt_currency(v)}</div>")
+            store_html.append(f"<div class='store-cell align-right' style='font-weight: 800;'>{fmt_currency(sum(acc_data['totals'].values()))}</div>")
+            store_html.append("</summary>")
 
             for partner_name, prt_totals in acc_data['partners'].items():
-                # -- PARTNER LEVEL (L3 - Leaf) --
-                html_parts.append("<div class='pnl-row lvl-3'>")
-                html_parts.append(f"<div class='pnl-cell' title='{partner_name}' style='padding-left: 65px;'>• {partner_name}</div>")
-                for p in selected_periods:
-                    v = prt_totals.get(p, 0)
-                    color_cls = "val-pos" if v >= 0 else "val-neg"
-                    html_parts.append(f"<div class='pnl-cell align-right {color_cls}'>{fmt_currency(v)}</div>")
-                
-                prt_tot = sum(prt_totals.values())
-                color_cls = "val-pos" if prt_tot >= 0 else "val-neg"
-                html_parts.append(f"<div class='pnl-cell align-right {color_cls}'>{fmt_currency(prt_tot)}</div>")
-                html_parts.append("</div>")
+                store_html.append("<div class='store-row lvl-3'>")
+                store_html.append(f"<div class='store-cell' style='padding-left: 65px;'>• {partner_name}</div>")
+                for s in relevant_stores:
+                    v = prt_totals.get(s, 0)
+                    store_html.append(f"<div class='store-cell align-right {'val-pos' if v >= 0 else 'val-neg'}'>{fmt_currency(v)}</div>")
+                store_html.append(f"<div class='store-cell align-right'>{fmt_currency(sum(prt_totals.values()))}</div>")
+                store_html.append("</div>")
 
-            html_parts.append("</details>") # Close Account
-        html_parts.append("</details>") # Close Classification
+            store_html.append("</details>") 
+        store_html.append("</details>") 
 
-    html_parts.append("</div></div>") # Close wrapper, then container
+    store_html.append("</div></div>")
+    st.markdown("".join(store_html), unsafe_allow_html=True)
 
-    # Render the entire table instantly
-    st.markdown("".join(html_parts), unsafe_allow_html=True)
 # ===========================
 # LEDGER EDITOR VIEW
 # ===========================
