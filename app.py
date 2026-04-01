@@ -1,12 +1,12 @@
 import pandas as pd
 import re
 import requests
-​import streamlit as st
 import os
 import io
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from azure.identity import ClientSecretCredential
+import streamlit as st
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
