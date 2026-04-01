@@ -1,8 +1,8 @@
+​import streamlit as st
 import pandas as pd
 import re
 import requests
 import os
-import streamlit as st
 import io
 from datetime import datetime, timezone
 from dotenv import load_dotenv
@@ -10,6 +10,9 @@ from azure.identity import ClientSecretCredential
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
+import openpyxl
+from openpyxl.styles import (PatternFill, Font, Alignment, Border, Side)
+from openpyxl.utils import get_column_letter
 
 # =============================
 # ENVIRONMENT & CONFIG
@@ -134,16 +137,36 @@ def run_graphql(query, variables=None):
             st.json(e.response.text)
         raise e
 
-READ_QUERY = """
-query {
-  executesp_readData { id account_name classification partner_id_name Store Balance Year MonthName Month FinancialYearMonth last_modified_at last_modified_user }
-}
-"""
-UPSERT_MUTATION = """
-mutation upsertBalance($year: Int!, $monthName: String!, $store: String!, $balance: Float, $account_name: String!, $classification: String!, $partner_id_name: String!, $last_modified_at: DateTime, $last_modified_user: String) {
-  executesp_upsertAccountBalance(year: $year, monthName: $monthName, store: $store, balance: $balance, account_name: $account_name, classification: $classification, partner_id_name: $partner_id_name, last_modified_at: $last_modified_at, last_modified_user: $last_modified_user) { rows_affected }
-}
-"""
+# =============================
+# BRAND BASED QUERIES
+# =============================
+if st.session_state.get("brand") == "wed":
+
+    READ_QUERY = """
+    query {
+      executesp_wd_readData { id Ledger classification ContraName Store Balance Year MonthName Month FinancialYearMonth last_modified_at last_modified_user }
+    }
+    """
+
+    UPSERT_MUTATION = """
+    mutation upsertBalance($year: Int!, $monthName: String!, $store: String!, $balance: Float, $account_name: String!, $classification: String!, $partner_id_name: String!, $last_modified_at: DateTime, $last_modified_user: String) {
+      executesp_wd_upsertBalance(year: $year, monthName: $monthName, store: $store, balance: $balance, account_name: $account_name, classification: $classification, partner_id_name: $partner_id_name, last_modified_at: $last_modified_at, last_modified_user: $last_modified_user) { rows_affected }
+    }
+    """
+
+else:  # PRA (default)
+
+    READ_QUERY = """
+    query {
+      executesp_pr_readData { id account_name classification partner_id_name Store Balance Year MonthName Month FinancialYearMonth last_modified_at last_modified_user }
+    }
+    """
+
+    UPSERT_MUTATION = """
+    mutation upsertBalance($year: Int!, $monthName: String!, $store: String!, $balance: Float, $account_name: String!, $classification: String!, $partner_id_name: String!, $last_modified_at: DateTime, $last_modified_user: String) {
+      executesp_pr_upsertBalance(year: $year, monthName: $monthName, store: $store, balance: $balance, account_name: $account_name, classification: $classification, partner_id_name: $partner_id_name, last_modified_at: $last_modified_at, last_modified_user: $last_modified_user) { rows_affected }
+    }
+    """
 
 # =============================
 # HELPER FUNCTIONS
@@ -255,13 +278,10 @@ def build_hierarchy_data(report_df, grouping_list, group_by='DisplayPeriod'):
 # =============================
 # EXCEL EXPORT WITH NATIVE GROUPING
 # =============================
-def build_excel_report(hierarchy, periods, store_filter="All", expand_all=False, open_classifications=None, open_accounts=None):
+def build_excel_report(hierarchy, periods, store_filter="All", brand="pra", report_type="pnl", expand_all=False, open_classifications=None, open_accounts=None):
+    brand_name = "Prashanti" if brand == "pra" else "Wedtree"
     if open_classifications is None: open_classifications = set()
     if open_accounts is None: open_accounts = set()
-
-    import openpyxl
-    from openpyxl.styles import (PatternFill, Font, Alignment, Border, Side)
-    from openpyxl.utils import get_column_letter
     
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -278,7 +298,10 @@ def build_excel_report(hierarchy, periods, store_filter="All", expand_all=False,
     # --- Title Block ---
     ws.merge_cells(f"A1:{get_column_letter(len(periods) + 3)}1")
     title_cell = ws["A1"]
-    title_cell.value = "Profit & Loss Statement"
+    if report_type == "store":
+        title_cell.value = "Store Comparison Report"
+    else:
+        title_cell.value = "Profit & Loss Statement"
     title_cell.font = Font(name="Calibri", bold=True, size=14, color=WHITE)
     title_cell.fill = make_fill(DARK_BLUE)
     title_cell.alignment = Alignment(horizontal="center", vertical="center")
@@ -286,7 +309,10 @@ def build_excel_report(hierarchy, periods, store_filter="All", expand_all=False,
     
     ws.merge_cells(f"A2:{get_column_letter(len(periods) + 3)}2")
     sub_cell = ws["A2"]
-    sub_cell.value = f"Store: {store_filter}  |  Generated: {datetime.now().strftime('%d %b %Y, %H:%M')}"
+    if report_type == "store":
+        sub_cell.value = f"Brand: {brand_name}  |  Comparison View  |  Generated: {datetime.now().strftime('%d %b %Y, %H:%M')}"
+    else:
+        sub_cell.value = f"Brand: {brand_name}  |  Store: {store_filter}  |  Generated: {datetime.now().strftime('%d %b %Y, %H:%M')}"
     sub_cell.font = Font(name="Calibri", size=9, color="B8D4F5")
     sub_cell.fill = make_fill(MID_BLUE)
     sub_cell.alignment = Alignment(horizontal="center", vertical="center")
@@ -559,13 +585,47 @@ if not st.session_state.logged_in:
     st.stop()
 
 # =============================
+# BRAND SELECTION (AFTER LOGIN)
+# =============================
+if "brand" not in st.session_state:
+    st.session_state.brand = "pra"
+
+brand_map = {
+    "Prashanti": "pra",
+    "Wedtree": "wed"
+}
+
+reverse_brand_map = {v: k for k, v in brand_map.items()}
+
+# with st.sidebar:
+#     st.markdown("<h2 style='color:#0F2044; font-weight:700;'>Brand</h2>", unsafe_allow_html=True)
+
+#     selected_label = st.selectbox(
+#         "Select Brand",
+#         options=list(brand_map.keys()),
+#         index=list(brand_map.keys()).index(reverse_brand_map[st.session_state.brand])
+#     )
+
+#     selected_value = brand_map[selected_label]
+
+#     if selected_value != st.session_state.brand:
+#         st.session_state.brand = selected_value
+#         st.rerun()
+
+# =============================
 # DATA FETCHING
 # =============================
 @st.cache_data(ttl=300)
-def load_data():
+def load_data(brand):
     result = run_graphql(READ_QUERY)
-    items = result.get("data", {}).get("executesp_readData", [])
+    data_key = "executesp_wd_readData" if brand == "wed" else "executesp_pr_readData"
+    items = result.get("data", {}).get(data_key, [])
     df = pd.DataFrame(items)
+    if brand == "wed":
+        df = df.rename(columns={
+            "Ledger": "account_name",
+            "ContraName": "partner_id_name"
+        })
     if not df.empty:
         df['Balance'] = pd.to_numeric(df['Balance'], errors='coerce').fillna(0.0)
         df['Year'] = pd.to_numeric(df['Year'], errors='coerce')
@@ -575,10 +635,14 @@ def load_data():
     return df
 
 with st.spinner("Synchronizing with Microsoft Fabric..."):
-    if "original_df" not in st.session_state:
-        raw_df = load_data()
+    if "current_brand" not in st.session_state:
+        st.session_state.current_brand = None
+
+    if st.session_state.current_brand != st.session_state.brand:
+        raw_df = load_data(st.session_state.brand)
         st.session_state.original_df = raw_df.copy()
         st.session_state.current_df = raw_df.copy()
+        st.session_state.current_brand = st.session_state.brand
         st.session_state.dirty = False
 
 df = st.session_state.current_df.copy()
@@ -592,9 +656,13 @@ if df.empty:
 REVENUE_CLASSES = ['Net Sales', 'Other Income']
 
 # =============================
-# SIDEBAR NAVIGATION
+# SIDEBAR NAVIGATION (ENHANCED UI ALIGNMENT)
 # =============================
 with st.sidebar:
+
+    # -----------------------------
+    # USER INFO
+    # -----------------------------
     st.markdown(f"""
     <div class="sidebar-user-info">
         <p style='margin:0; font-size:11px; color:#64748B;'>SIGNED IN AS</p>
@@ -602,18 +670,56 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
 
-    view_mode = st.radio("Navigation", ["📈 Financial Insights", "✏️ Ledger Editor", "💰 Budget vs Actual"], label_visibility="collapsed")
+    # -----------------------------
+    # BRAND SELECTOR
+    # -----------------------------
+    st.markdown("<h2>Brand</h2>", unsafe_allow_html=True)
+
+    selected_label = st.selectbox(
+        "Select Brand",
+        options=list(brand_map.keys()),
+        index=list(brand_map.keys()).index(reverse_brand_map[st.session_state.brand]),
+        label_visibility="visible"
+    )
+
+    selected_value = brand_map[selected_label]
+
+    if selected_value != st.session_state.brand:
+        st.session_state.brand = selected_value
+        st.rerun()
+
     st.markdown("<hr>", unsafe_allow_html=True)
 
+    # -----------------------------
+    # NAVIGATION
+    # -----------------------------
+    view_options = ["📈 Financial Insights", "✏️ Ledger Editor"]
+    # Hide Budget vs Actual for WED
+    if st.session_state.brand == "pra":
+        view_options.append("💰 Budget vs Actual")
+
+    view_mode = st.radio(
+        "Navigation",
+        view_options,
+        label_visibility="collapsed"
+    )
+    st.markdown("<hr>", unsafe_allow_html=True)
+
+    # 📈 FINANCIAL INSIGHTS FILTERS
     if view_mode == "📈 Financial Insights":
-        st.markdown("<p style='color:#0F2044 !important; font-weight:600; font-size:1rem;'>📊 Report Filters</p>", unsafe_allow_html=True)
-        date_range_type = st.radio("Range Type", ["📅 Single/Multiple Months", "📆 Financial Year"], horizontal=True)
+        st.markdown("<h2>📊 Report Filters</h2>", unsafe_allow_html=True)
+        date_range_type = st.radio(
+            "Range Type",
+            ["📅 Single/Multiple Months", "📆 Financial Year"],
+            horizontal=True
+        )
 
         if date_range_type == "📅 Single/Multiple Months":
-            base_period = st.selectbox("Base Period", period_list, key="rep_base_period")
+            base_period = st.selectbox("Base Period", period_list)
             num_comparisons = st.number_input("Previous Periods", min_value=0, max_value=12, value=3)
             base_idx = period_list.index(base_period)
             selected_periods = period_list[base_idx: min(base_idx + num_comparisons + 1, len(period_list))]
+
         else:
             available_years = sorted(df['Year'].dropna().unique(), reverse=True)
             selected_year = st.selectbox("Financial Year (Apr–Mar)", available_years)
@@ -624,60 +730,95 @@ with st.sidebar:
             else:
                 selected_periods = []
 
-        store_filter = st.selectbox("🏢 Store", ["All"] + sorted(df['Store'].dropna().astype(str).unique()))
+        store_filter = st.selectbox(
+            "🏢 Store",
+            ["All"] + sorted(df['Store'].dropna().astype(str).unique())
+        )
 
+    # ✏️ LEDGER EDITOR
     elif view_mode == "✏️ Ledger Editor":
-        st.markdown("<p style='color:#0F2044 !important; font-weight:600; font-size:1rem;'>📊 Report Filters</p>", unsafe_allow_html=True)
-        
-        editor_date_range_type = st.radio("Range Type", ["📅 Single/Multiple Months", "📆 Financial Year"], 
-                                         horizontal=True, key="editor_range_type")
-    
+
+        st.markdown("<h2>📊 Report Filters</h2>", unsafe_allow_html=True)
+
+        editor_date_range_type = st.radio(
+            "Range Type",
+            ["📅 Single/Multiple Months", "📆 Financial Year"],
+            horizontal=True,
+            key="editor_range_type"
+        )
+
         if editor_date_range_type == "📅 Single/Multiple Months":
             editor_base_period = st.selectbox("Base Period", period_list, key="editor_base_period")
-            editor_num_comparisons = st.number_input("Number of Periods", min_value=1, max_value=12, value=3, 
-                                                    key="editor_num_comparisons", 
-                                                    help="Total periods to display including base period")
+            editor_num_comparisons = st.number_input(
+                "Number of Periods",
+                min_value=1,
+                max_value=12,
+                value=3,
+                key="editor_num_comparisons"
+            )
             base_idx = period_list.index(editor_base_period)
             editor_selected_periods = period_list[base_idx: min(base_idx + editor_num_comparisons, len(period_list))]
+
         else:
             editor_available_years = sorted(df['Year'].dropna().unique(), reverse=True)
-            editor_selected_year = st.selectbox("Financial Year (Apr–Mar)", editor_available_years, key="editor_year")
+            editor_selected_year = st.selectbox(
+                "Financial Year (Apr–Mar)",
+                editor_available_years,
+                key="editor_year"
+            )
             fy_periods = get_financial_year_range(df, editor_selected_year, start_month=4)
+
             if fy_periods:
                 editor_selected_periods = [p['display'] for p in fy_periods]
                 st.info(f"{len(editor_selected_periods)} periods: {fy_periods[0]['display']} → {fy_periods[-1]['display']}")
             else:
                 editor_selected_periods = []
-    
-        editor_store_filter = st.selectbox("🏢 Store", ["All"] + sorted(df['Store'].dropna().astype(str).unique()), 
-                                          key="editor_store")
-        
+
+        editor_store_filter = st.selectbox(
+            "🏢 Store",
+            ["All"] + sorted(df['Store'].dropna().astype(str).unique()),
+            key="editor_store"
+        )
+
         st.markdown("<hr>", unsafe_allow_html=True)
-        st.markdown("<p style='color:#0F2044 !important; font-weight:600; font-size:1rem;'>✏️ Editor Filters</p>", unsafe_allow_html=True)
-        
+        st.markdown("<h2>✏️ Editor Filters</h2>", unsafe_allow_html=True)
+
         if editor_selected_periods:
             editor_filtered_df = df[df['DisplayPeriod'].isin(editor_selected_periods)].copy()
+
             if editor_store_filter != "All":
                 editor_filtered_df = editor_filtered_df[editor_filtered_df['Store'] == editor_store_filter]
-            
+
             if not editor_filtered_df.empty:
-                editor_class = st.selectbox("Class", ["All"] + sorted(editor_filtered_df['classification'].dropna().astype(str).unique()), 
-                                           key="editor_class")
+                editor_class = st.selectbox(
+                    "Class",
+                    ["All"] + sorted(editor_filtered_df['classification'].dropna().astype(str).unique()),
+                    key="editor_class"
+                )
+
                 if editor_class != "All":
                     editor_filtered_df = editor_filtered_df[editor_filtered_df['classification'] == editor_class]
-                
+
                 if not editor_filtered_df.empty:
-                    editor_account = st.selectbox("Account", ["All"] + sorted(editor_filtered_df['account_name'].dropna().astype(str).unique()), 
-                                                 key="editor_account")
+                    editor_account = st.selectbox(
+                        "Account",
+                        ["All"] + sorted(editor_filtered_df['account_name'].dropna().astype(str).unique()),
+                        key="editor_account"
+                    )
+
                     if editor_account != "All":
                         editor_filtered_df = editor_filtered_df[editor_filtered_df['account_name'] == editor_account]
-                    
+
                     if not editor_filtered_df.empty:
-                        editor_partner = st.selectbox("Partner", ["All"] + sorted(editor_filtered_df['partner_id_name'].dropna().astype(str).unique()), 
-                                                     key="editor_partner")
+                        editor_partner = st.selectbox(
+                            "Partner",
+                            ["All"] + sorted(editor_filtered_df['partner_id_name'].dropna().astype(str).unique()),
+                            key="editor_partner"
+                        )
+
                         if editor_partner != "All":
                             editor_filtered_df = editor_filtered_df[editor_filtered_df['partner_id_name'] == editor_partner]
-            
+
             st.session_state.editor_filtered_df = editor_filtered_df
             st.session_state.editor_selected_periods = editor_selected_periods
             st.session_state.editor_store_filter = editor_store_filter
@@ -685,23 +826,23 @@ with st.sidebar:
             st.session_state.editor_filtered_df = pd.DataFrame()
             st.session_state.editor_selected_periods = []
             st.warning("No periods selected.")
-    
+
+    # 💰 BUDGET VS ACTUAL (ONLY PRA)
     elif view_mode == "💰 Budget vs Actual":
-        st.markdown("<p style='color:#0F2044 !important; font-weight:600; font-size:1rem;'>📅 Budget Period</p>", unsafe_allow_html=True)
-        
+        st.markdown("<h2>📅 Budget Period</h2>", unsafe_allow_html=True)
         budget_base_period = st.selectbox(
-            "Select Base Period", 
-            period_list, 
+            "Select Base Period",
+            period_list,
             key="budget_base_period"
         )
-        
         st.session_state.budget_selected_period = budget_base_period
 
+    # Sign Out
     st.markdown("<hr>", unsafe_allow_html=True)
-    if st.button("🚪 Sign Out", width = 'stretch', type="secondary"):
+    if st.button("🚪 Sign Out", use_container_width=True, type="secondary"):
         st.session_state.logged_in = False
         st.session_state.logged_in_user = ""
-        st.query_params.clear() 
+        st.query_params.clear()
         st.cache_data.clear()
         st.rerun()
 
@@ -778,10 +919,13 @@ if view_mode == "📈 Financial Insights":
                 st.session_state.expand_pnl = False 
                 st.rerun()
         with export_col3:
+            brand_name = reverse_brand_map.get(st.session_state.brand, "Unknown")
+
             excel_file = build_excel_report(
                 hierarchy=hierarchy, 
                 periods=selected_periods, 
-                store_filter=store_filter, 
+                store_filter=store_filter,
+                brand=st.session_state.brand,
                 expand_all=st.session_state.get('expand_pnl', False),
                 open_classifications=st.session_state.open_classifications,
                 open_accounts=st.session_state.open_accounts
@@ -790,7 +934,7 @@ if view_mode == "📈 Financial Insights":
             st.download_button(
                 label="📥 Export",
                 data=excel_file,
-                file_name=f"PnL_Statement_{store_filter}_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                file_name=f"{brand_name}_PnL_Statement_{store_filter}_{datetime.now().strftime('%Y%m%d')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 type="primary",
                 key="pnl_export_main_btn", 
@@ -938,16 +1082,20 @@ if view_mode == "📈 Financial Insights":
                 st.session_state.expand_store = False
                 st.rerun()
         with s_exp3:
+            brand_name = reverse_brand_map.get(st.session_state.brand, "Unknown")
+
             store_excel = build_excel_report(
                 hierarchy=store_hierarchy, 
                 periods=relevant_stores, 
                 store_filter="Comparison", 
+                report_type="store",
                 expand_all=st.session_state.get('expand_store', False)
             )
             st.download_button(
                 label="📥 Export",
+                type="primary",
                 data=store_excel,
-                file_name=f"Store_Comparison_{display_period_label}_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                file_name=f"{brand_name}_Store_Comparison_{display_period_label}_{datetime.now().strftime('%Y%m%d')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key="btn_store_export",
                 use_container_width=True
@@ -1322,12 +1470,12 @@ elif view_mode == "💰 Budget vs Actual":
     </style>
     """, unsafe_allow_html=True)
     
-    BUDGET_QUERY = "query budgetData { executesp_readBudgetData { Particulars Month Year Budget } }"
+    BUDGET_QUERY = "query budgetData { executesp_pr_readBudgetData { Particulars Month Year Budget } }"
     
     @st.cache_data(ttl=600)
     def fetch_budget_data():
         response = run_graphql(BUDGET_QUERY)
-        return pd.DataFrame(response["data"]["executesp_readBudgetData"]) if response else pd.DataFrame()
+        return pd.DataFrame(response["data"]["executesp_pr_readBudgetData"]) if response else pd.DataFrame()
 
     raw_budget_df = fetch_budget_data()
     actual_data = df[df['DisplayPeriod'] == base_period].copy()
