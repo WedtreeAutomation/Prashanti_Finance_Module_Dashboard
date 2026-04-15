@@ -1,3 +1,4 @@
+import streamlit as st
 import pandas as pd
 import re
 import requests
@@ -6,7 +7,6 @@ import io
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from azure.identity import ClientSecretCredential
-import streamlit as st
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
@@ -182,12 +182,12 @@ def get_financial_year_range(df, year, start_month=4):
             periods.append({'sort': period_sort, 'display': display})
     return periods
 
-def calculate_profit_metrics(df, periods, revenue_classes):
+def calculate_profit_metrics(df, periods, revenue_classes,expense_classes):
     results = []
     for period in periods:
         period_data = df[df['DisplayPeriod'] == period]
         revenue = period_data[period_data['classification'].isin(revenue_classes)]['Balance'].sum()
-        expenses = period_data[~period_data['classification'].isin(revenue_classes)]['Balance'].sum()
+        expenses = period_data[period_data['classification'].isin(expense_classes)]['Balance'].sum()
         profit = revenue - expenses
         results.append({
             'DisplayPeriod': period,
@@ -221,58 +221,160 @@ def fmt_currency(val):
 # HIERARCHICAL DATA BUILDER
 # =============================
 def build_hierarchy_data(report_df, grouping_list, group_by='DisplayPeriod'):
-    """
-    Modified to support dynamic grouping (e.g., by Period or by Store).
-    
-    :param report_df: The source DataFrame
-    :param grouping_list: List of columns to show (e.g., selected_periods or unique_stores)
-    :param group_by_col: The column name in report_df to filter against (default 'DisplayPeriod')
-    """
     hierarchy = {}
-    
+
     classification_order = [
         'Net Sales', 'Other Income', 'Cost of Goods Sold (COGS)', 'Employee cost',
         'Rent and Utilities', 'Marketing and Advertisment', 'Admin Expenses',
-        'Logistics', 'Other Expenses', 'Finance cost', 'Supplier Payments',
-        'Purchase Expense', 'Depreciation'
+        'Logistics', 'Other Expenses', 'Finance cost', 'Depreciation',
+        'Supplier Payments', 'Purchase Expense'
     ]
-    
+
+    def get_totals(df):
+        return {
+            item: (
+                df[df[group_by] == item]['Balance']
+                .fillna(0)   
+                .sum()
+            )
+            for item in grouping_list
+        }
+
+    # Precompute classification totals
+    classification_totals_map = {}
+    for cls in report_df['classification'].dropna().unique():
+        classification_totals_map[cls] = get_totals(
+            report_df[report_df['classification'] == cls]
+        )
+
+    def sum_dicts(dicts):
+        result = {k: 0 for k in grouping_list}
+        for d in dicts:
+            for k in grouping_list:
+                result[k] += (d.get(k) or 0)
+        return result
+
+    def subtract_dicts(a, b):
+        return {k: a.get(k, 0) - b.get(k, 0) for k in grouping_list}
+
     unique_classifications = report_df['classification'].dropna().unique()
-    
-    def get_classification_order(cls):
-        try:
-            return classification_order.index(cls)
-        except ValueError:
-            return len(classification_order) + (sum(ord(c) for c in cls) if cls else 0)
-    
-    sorted_classifications = sorted(unique_classifications, key=get_classification_order)
-    
+    sorted_classifications = sorted(
+        unique_classifications,
+        key=lambda x: classification_order.index(x) if x in classification_order else 999
+    )
+
     for classification in sorted_classifications:
         cls_df = report_df[report_df['classification'] == classification]
-        cls_totals = {}
-        for item in grouping_list:
-            # Dynamically filter by the provided column name
-            cls_totals[item] = cls_df[cls_df[group_by] == item]['Balance'].sum()
-        
+
+        # Build normal expandable node
         accounts = {}
         for account in sorted(cls_df['account_name'].dropna().unique()):
             acc_df = cls_df[cls_df['account_name'] == account]
-            acc_totals = {}
-            for item in grouping_list:
-                acc_totals[item] = acc_df[acc_df[group_by] == item]['Balance'].sum()
-            
+            acc_totals = get_totals(acc_df)
+
             partners = {}
             for partner in sorted(acc_df['partner_id_name'].dropna().unique()):
                 prt_df = acc_df[acc_df['partner_id_name'] == partner]
-                prt_totals = {}
-                for item in grouping_list:
-                    prt_totals[item] = prt_df[prt_df[group_by] == item]['Balance'].sum()
-                partners[partner] = prt_totals
-            
-            accounts[account] = {'totals': acc_totals, 'partners': partners}
-        
-        hierarchy[classification] = {'totals': cls_totals, 'accounts': accounts}
-        
+                partners[partner] = get_totals(prt_df)
+
+            accounts[account] = {
+                'totals': acc_totals,
+                'partners': partners
+            }
+
+        hierarchy[classification] = {
+            'totals': classification_totals_map[classification],
+            'accounts': accounts,
+            'is_summary': False
+        }
+
+        # =============================
+        # INSERT SUMMARY ROWS
+        # =============================
+
+        # 1. Total Revenue
+        if classification == 'Other Income':
+            total_revenue = sum_dicts([
+                classification_totals_map.get('Net Sales', {}),
+                classification_totals_map.get('Other Income', {})
+            ])
+            hierarchy['Total Revenue'] = {
+                'totals': total_revenue,
+                'accounts': {},
+                'is_summary': True
+            }
+
+        # 2. Total Expense (COGS)
+        if classification == 'Cost of Goods Sold (COGS)':
+            hierarchy['Total Expense'] = {
+                'totals': classification_totals_map.get('Cost of Goods Sold (COGS)', {}),
+                'accounts': {},
+                'is_summary': True
+            }
+
+            # 3. Gross Profit
+            total_revenue = sum_dicts([
+                classification_totals_map.get('Net Sales', {}),
+                classification_totals_map.get('Other Income', {})
+            ])
+            total_expense = classification_totals_map.get('Cost of Goods Sold (COGS)', {})
+
+            gross_profit = subtract_dicts(total_revenue, total_expense)
+
+            hierarchy['Gross Profit'] = {
+                'totals': gross_profit,
+                'accounts': {},
+                'is_summary': True
+            }
+
+        # 4. Total Operating Expense
+        if classification == 'Other Expenses':
+            operating_expense_classes = [
+                'Employee cost', 'Rent and Utilities', 'Marketing and Advertisment',
+                'Admin Expenses', 'Logistics', 'Other Expenses'
+            ]
+
+            total_operating_expense = sum_dicts([
+                classification_totals_map.get(c, {}) for c in operating_expense_classes
+            ])
+
+            hierarchy['Total Operating Expense'] = {
+                'totals': total_operating_expense,
+                'accounts': {},
+                'is_summary': True
+            }
+
+            # 5. Operating Profit
+            gross_profit = subtract_dicts(
+                sum_dicts([
+                    classification_totals_map.get('Net Sales', {}),
+                    classification_totals_map.get('Other Income', {})
+                ]),
+                classification_totals_map.get('Cost of Goods Sold (COGS)', {})
+            )
+
+            operating_profit = subtract_dicts(gross_profit, total_operating_expense)
+
+            hierarchy['Operating Profit'] = {
+                'totals': operating_profit,
+                'accounts': {},
+                'is_summary': True
+            }
+
+        # 6. PBT
+        if classification == 'Finance cost':
+            operating_profit = hierarchy.get('Operating Profit', {}).get('totals', {})
+
+            finance_cost = classification_totals_map.get('Finance cost', {})
+
+            pbt = subtract_dicts(operating_profit, finance_cost)
+
+            hierarchy['PBT'] = {
+                'totals': pbt,
+                'accounts': {},
+                'is_summary': True
+            }
+
     return hierarchy
 
 # =============================
@@ -348,9 +450,10 @@ def build_excel_report(hierarchy, periods, store_filter="All", brand="pra", repo
         'Logistics',
         'Other Expenses',
         'Finance cost',
+        'Depreciation',
         'Supplier Payments',            
-        'Purchase Expense',
-        'Depreciation'
+        'Purchase Expense'
+        
     ]
     
     def get_classification_order(cls):
@@ -359,10 +462,39 @@ def build_excel_report(hierarchy, periods, store_filter="All", brand="pra", repo
         except ValueError:
             return len(classification_order) + (sum(ord(c) for c in cls) if cls else 0)
     
-    sorted_classifications = sorted(hierarchy.keys(), key=get_classification_order)
-    
-    for cls_name in sorted_classifications:
+    for cls_name, cls_data in hierarchy.items():
         cls_data = hierarchy[cls_name]
+
+        # ✅ SUMMARY ROW (NON-EXPANDABLE)
+        if cls_data.get("is_summary"):
+            cls_total = sum((v or 0) for v in cls_data['totals'].values())
+
+            cell = ws.cell(row=current_row, column=1, value=f"  {cls_name}")
+            cell.font = Font(name="Calibri", bold=True, size=11, color=DARK_BLUE)
+            cell.fill = make_fill("E2E8F0")  # slightly darker than LIGHT_BLUE
+            cell.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+
+            for col_idx, p in enumerate(periods, 2):
+                v = cls_data['totals'].get(p, 0) or 0
+                c = ws.cell(row=current_row, column=col_idx, value=v)
+                c.number_format = '#,##0'
+                c.font = Font(name="Calibri", bold=True, size=9.5,
+                            color=GREEN if v > 0 else RED if v < 0 else GREY)
+                c.fill = make_fill("E2E8F0")
+                c.alignment = Alignment(horizontal="right", vertical="center")
+
+            total_cell = ws.cell(row=current_row, column=len(periods) + 2, value=cls_total)
+            total_cell.number_format = '#,##0'
+            total_cell.font = Font(name="Calibri", bold=True, size=9.5,
+                                color=GREEN if cls_total > 0 else RED if cls_total < 0 else GREY)
+            total_cell.fill = make_fill("E2E8F0")
+            total_cell.alignment = Alignment(horizontal="right", vertical="center")
+
+            ws.row_dimensions[current_row].height = 20
+
+            # 🚨 IMPORTANT: NO outline level → non-expandable
+            current_row += 1
+            continue
         cls_key = f"cls_{cls_name}"
         is_cls_open = expand_all or (cls_key in open_classifications)
         cls_total = sum(cls_data['totals'].values())
@@ -375,7 +507,7 @@ def build_excel_report(hierarchy, periods, store_filter="All", brand="pra", repo
         cls_cell.border = Border(top=Side(style='thin', color='CBD5E1'), bottom=Side(style='thin', color='CBD5E1'))
         
         for col_idx, p in enumerate(periods, 2):
-            v = cls_data['totals'].get(p, 0)
+            v = cls_data['totals'].get(p, 0) or 0
             cell = ws.cell(row=current_row, column=col_idx, value=v)
             cell.number_format = '#,##0'
             cell.font = Font(name="Calibri", bold=True, size=9, color=GREEN if v > 0 else RED if v < 0 else GREY)
@@ -466,35 +598,34 @@ def build_excel_report(hierarchy, periods, store_filter="All", brand="pra", repo
                 ws.row_dimensions[current_row].height = 16
                 current_row += 1
     
-    # Grand Total
-    grand_totals = {p: sum(cls_data['totals'].get(p, 0) for cls_data in hierarchy.values()) for p in periods}
-    grand_total = sum(grand_totals.values())
-    
-    gt_cell = ws.cell(row=current_row, column=1, value="  GRAND TOTAL")
-    gt_cell.font = Font(name="Calibri", bold=True, size=11, color=WHITE)
-    gt_cell.fill = make_fill(DARK_BLUE)
-    gt_cell.alignment = Alignment(horizontal="left", vertical="center")
-    
-    for col_idx, p in enumerate(periods, 2):
-        cell = ws.cell(row=current_row, column=col_idx, value=grand_totals[p])
-        cell.number_format = '#,##0'
-        cell.font = Font(name="Calibri", bold=True, size=10, color=WHITE)
-        cell.fill = make_fill(DARK_BLUE)
-        cell.alignment = Alignment(horizontal="right", vertical="center")
-    
-    gt_total = ws.cell(row=current_row, column=len(periods) + 2, value=grand_total)
-    gt_total.number_format = '#,##0'
-    gt_total.font = Font(name="Calibri", bold=True, size=10, color=WHITE)
-    gt_total.fill = make_fill(DARK_BLUE)
-    gt_total.alignment = Alignment(horizontal="right", vertical="center")
-    ws.row_dimensions[current_row].height = 24
-    
     ws.freeze_panes = "B5"
     
     output = io.BytesIO()
     wb.save(output)
     output.seek(0)
     return output
+
+def build_ytd_comparison(report_df, current_periods, previous_periods, group_by='DisplayPeriod'):
+
+    curr = report_df[report_df[group_by].isin(current_periods)].copy()
+    prev = report_df[report_df[group_by].isin(previous_periods)].copy()
+
+    curr['Type'] = 'CY'
+    prev['Type'] = 'PY'
+
+    df = pd.concat([curr, prev])
+
+    agg = (
+        df.groupby(
+            ['classification', 'account_name', 'partner_id_name', 'Type'],
+            dropna=False
+        )['Balance']
+        .sum()
+        .reset_index()
+    )
+
+    return agg
+
 
 # =============================
 # PERSISTENT SESSION STATE
@@ -539,6 +670,9 @@ if "expand_pnl" not in st.session_state:
 
 if "expand_store" not in st.session_state: 
     st.session_state.expand_store = False
+
+if "expand_ytd" not in st.session_state:
+    st.session_state.expand_ytd = False
 
 # =============================
 # APP FLOW: LOGGED OUT
@@ -597,21 +731,6 @@ brand_map = {
 
 reverse_brand_map = {v: k for k, v in brand_map.items()}
 
-# with st.sidebar:
-#     st.markdown("<h2 style='color:#0F2044; font-weight:700;'>Brand</h2>", unsafe_allow_html=True)
-
-#     selected_label = st.selectbox(
-#         "Select Brand",
-#         options=list(brand_map.keys()),
-#         index=list(brand_map.keys()).index(reverse_brand_map[st.session_state.brand])
-#     )
-
-#     selected_value = brand_map[selected_label]
-
-#     if selected_value != st.session_state.brand:
-#         st.session_state.brand = selected_value
-#         st.rerun()
-
 # =============================
 # DATA FETCHING
 # =============================
@@ -654,6 +773,15 @@ if df.empty:
     st.stop()
 
 REVENUE_CLASSES = ['Net Sales', 'Other Income']
+EXPENSE_CLASSES = ['Cost of Goods Sold (COGS)',
+        'Employee cost',
+        'Rent and Utilities',            
+        'Marketing and Advertisment',    
+        'Admin Expenses',
+        'Logistics',
+        'Other Expenses',
+        'Finance cost',
+        'Depreciation']
 
 # =============================
 # SIDEBAR NAVIGATION (ENHANCED UI ALIGNMENT)
@@ -870,7 +998,7 @@ if view_mode == "📈 Financial Insights":
     latest_period = selected_periods[0]
     latest_data = report_df[report_df['DisplayPeriod'] == latest_period]
     total_revenue = latest_data[latest_data['classification'].isin(REVENUE_CLASSES)]['Balance'].sum()
-    total_expenses = latest_data[~latest_data['classification'].isin(REVENUE_CLASSES)]['Balance'].sum()
+    total_expenses = latest_data[latest_data['classification'].isin(EXPENSE_CLASSES)]['Balance'].sum()
     net_profit = total_revenue - total_expenses
     profit_margin = (net_profit / total_revenue * 100) if total_revenue != 0 else 0
 
@@ -893,7 +1021,7 @@ if view_mode == "📈 Financial Insights":
     st.write("<br>", unsafe_allow_html=True)
 
     # --- CHART ---
-    profit_df = calculate_profit_metrics(report_df, selected_periods, REVENUE_CLASSES)
+    profit_df = calculate_profit_metrics(report_df, selected_periods, REVENUE_CLASSES, EXPENSE_CLASSES)
     fig = go.Figure()
     fig.add_trace(go.Bar(x=profit_df['DisplayPeriod'], y=profit_df['Revenue'], name='Revenue', marker_color='#0AB370', opacity=0.8))
     fig.add_trace(go.Bar(x=profit_df['DisplayPeriod'], y=profit_df['Expenses'], name='Expenses', marker_color='#F43F5E', opacity=0.8))
@@ -1005,10 +1133,40 @@ if view_mode == "📈 Financial Insights":
     pnl_open_attr = "open" if st.session_state.get('expand_pnl', False) else ""
 
     for cls_name, cls_data in hierarchy.items():
+        # ✅ CHECK: summary row (non-expandable)
+        if cls_data.get("is_summary"):
+
+            html_parts.append("<div class='pnl-row lvl-1'>")
+
+            # No arrow, no folder icon
+            html_parts.append(
+                f"<div class='pnl-cell' title='{cls_name.upper()}' style='font-weight:800; background:#EEF2F9;'>"
+                f"{cls_name.upper()}</div>"
+            )
+
+            for p in selected_periods:
+                v = cls_data['totals'].get(p, 0) or 0
+                color_cls = "val-pos" if v >= 0 else "val-neg"
+
+                html_parts.append(
+                    f"<div class='pnl-cell align-right {color_cls}' "
+                    f"style='font-weight:800; background:#EEF2F9;'>"
+                    f"{fmt_currency(v)}</div>"
+                )
+
+            cls_tot = sum(cls_data['totals'].values())
+
+            html_parts.append(
+                f"<div class='pnl-cell align-right'>"
+                f"<span class='val-tot'>{fmt_currency(cls_tot)}</span></div>"
+            )
+
+            html_parts.append("</div>")
+            continue
         html_parts.append(f"<details {pnl_open_attr}><summary class='pnl-row lvl-1'>")
         html_parts.append(f"<div class='pnl-cell' title='{cls_name.upper()}'><span class='arrow'>▶</span> 📂 {cls_name.upper()}</div>")
         for p in selected_periods:
-            v = cls_data['totals'].get(p, 0)
+            v = cls_data['totals'].get(p, 0) or 0
             color_cls = "val-pos" if v >= 0 else "val-neg"
             html_parts.append(f"<div class='pnl-cell align-right {color_cls}'>{fmt_currency(v)}</div>")
         
@@ -1137,7 +1295,7 @@ if view_mode == "📈 Financial Insights":
     .store-cell:first-child {{ 
         position: sticky; 
         left: 0; 
-        background-color: #FFFFFF; 
+        background-color: #F1F5F9; 
         z-index: 5; 
         border-right: 1px solid #E2E8F0; 
         overflow: hidden;
@@ -1175,10 +1333,41 @@ if view_mode == "📈 Financial Insights":
     store_html.append("<div class='store-cell align-right'>TOTAL</div></div>")
 
     for cls_name, cls_data in store_hierarchy.items():
+        if cls_data.get("is_summary"):
+
+            store_html.append("<div class='store-row lvl-1'>")
+
+            # No arrow, no folder icon
+            store_html.append(
+                f"<div class='store-cell' title='{cls_name.upper()}' style='font-weight:800; background:#EEF2F9;'>"
+                f"{cls_name.upper()}</div>"
+            )
+
+            for s in relevant_stores:
+                v = cls_data['totals'].get(p, 0) or 0
+                color_cls = "val-pos" if v >= 0 else "val-neg"
+
+                store_html.append(
+                    f"<div class='store-cell align-right {color_cls}' "
+                    f"style='font-weight:800; background:#EEF2F9;'>"
+                    f"{fmt_currency(v)}</div>"
+                )
+
+            cls_tot = sum(cls_data['totals'].values())
+
+            store_html.append(
+                f"<div class='store-cell align-right'>"
+                f"<span class='val-tot'>{fmt_currency(cls_tot)}</span></div>"
+            )
+
+            store_html.append("</div>")
+
+            # 🚨 IMPORTANT: skip expandable logic
+            continue
         store_html.append(f"<details {store_open_attr}><summary class='store-row lvl-1'>")
         store_html.append(f"<div class='store-cell'><span class='arrow'>▶</span> 📂 {cls_name.upper()}</div>")
         for s in relevant_stores:
-            v = cls_data['totals'].get(s, 0)
+            v = cls_data['totals'].get(s, 0) or 0
             store_html.append(f"<div class='store-cell align-right {'val-pos' if v >= 0 else 'val-neg'}'>{fmt_currency(v)}</div>")
         store_html.append(f"<div class='store-cell align-right'><span class='val-tot'>{fmt_currency(sum(cls_data['totals'].values()))}</span></div>")
         store_html.append("</summary>")
@@ -1206,6 +1395,237 @@ if view_mode == "📈 Financial Insights":
 
     store_html.append("</div></div>")
     st.markdown("".join(store_html), unsafe_allow_html=True)
+
+    # ==========================================
+    # 📊 YTD COMPARISON DATA PREPARATION
+    # ==========================================
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("---")
+
+    is_full_fy = len(selected_periods) >= 12
+
+    if is_full_fy:
+        cy_df = report_df.copy()
+
+        py_periods = []
+        for p in selected_periods:
+            month, year = p.split()
+            py_periods.append(f"{month} {int(year) - 1}")
+
+        py_df = df[df['DisplayPeriod'].isin(py_periods)].copy()
+
+        if store_filter != "All":
+            py_df = py_df[py_df['Store'] == store_filter]
+
+        comparison_df = pd.concat([
+            cy_df.assign(YearType="CY"),
+            py_df.assign(YearType="PY")
+        ])
+        ytd_label = "Financial Year"
+
+    else:
+        base_period = selected_periods[0]
+        month, year = base_period.split()
+
+        py_period = f"{month} {int(year) - 1}"
+
+        cy_df = report_df[report_df['DisplayPeriod'] == base_period]
+        py_df = df[df['DisplayPeriod'] == py_period]
+
+        if store_filter != "All":
+            py_df = py_df[py_df['Store'] == store_filter]
+
+        comparison_df = pd.concat([
+            cy_df.assign(YearType="CY"),
+            py_df.assign(YearType="PY")
+        ])
+
+        ytd_label = f"{base_period} vs {py_period}"
+
+    # Build hierarchy
+    ytd_hierarchy = build_hierarchy_data(
+        comparison_df,
+        grouping_list=["PY", "CY"],
+        group_by="YearType"
+    )
+
+    # ==========================================
+    # 📊 YTD UI HEADER
+    # ==========================================
+    col1, col2 = st.columns([3, 2])
+
+    with col1:
+        st.markdown(f"### 📊 YTD Comparison — {ytd_label}")
+
+    with col2:
+        b1, b2, b3 = st.columns([1, 1, 1])
+
+        with b1:
+            if st.button("⊞ Expand All", key="ytd_expand_btn", use_container_width=True):
+                st.session_state.expand_ytd = True
+                st.rerun()
+
+        with b2:
+            if st.button("Collapse All", key="ytd_collapse_btn", use_container_width=True):
+                st.session_state.expand_ytd = False
+                st.rerun()
+
+        with b3:
+            ytd_excel = build_excel_report(
+                hierarchy=ytd_hierarchy,
+                periods=["PY", "CY"],
+                store_filter=store_filter,
+                brand=st.session_state.brand,
+                report_type="ytd"
+            )
+
+            st.download_button(
+                label="📥 Export",
+                data=ytd_excel,
+                type="primary",
+                file_name=f"YTD_Comparison_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+
+    # ==========================================
+    # 📊 YTD TABLE UI
+    # ==========================================
+    ytd_html = []
+
+    ytd_html.append("""
+    <style>
+    .ytd-container {
+        width: 100%;
+        overflow-x: auto;
+        border: 1px solid #CBD5E1;
+        border-radius: 8px;
+        background: #FFFFFF;
+        padding-bottom: 10px;
+        margin-top: 10px;
+    }
+
+    .ytd-table-wrapper {
+        min-width: 100%;
+        width: max-content;
+        display: flex;
+        flex-direction: column;
+    }
+
+    .ytd-row {
+        display: grid;
+        grid-template-columns: 350px 150px 150px 120px;
+        border-bottom: 1px solid #E2E8F0;
+        align-items: center;
+    }
+
+    .ytd-header {
+        background-color: #0F2044;
+        color: white;
+        font-weight: bold;
+    }
+
+    .ytd-cell {
+        padding: 10px 12px;
+        font-size: 13px;
+        white-space: nowrap;
+    }
+
+    .align-right { text-align: right; }
+
+    .val-pos { color: #059669; font-weight: 600; }
+    .val-neg { color: #E11D48; font-weight: 600; }
+
+    .lvl-1 { font-weight: 700; background: #F1F5F9; }
+    .lvl-2 { font-weight: 600; }
+    .lvl-3 { color: #64748B; }
+    </style>
+
+    <div class='ytd-container'>
+    <div class='ytd-table-wrapper'>
+    """)
+
+    # HEADER
+    ytd_html.append("""
+    <div class='ytd-row ytd-header'>
+        <div class='ytd-cell'>PARTICULARS</div>
+        <div class='ytd-cell align-right'>PY</div>
+        <div class='ytd-cell align-right'>CY</div>
+        <div class='ytd-cell align-right'>%</div>
+    </div>
+    """)
+
+    # ==========================================
+    # DATA ROWS
+    # ==========================================
+    ytd_open_attr = "open" if st.session_state.get("expand_ytd", False) else ""
+    for cls_name, cls_data in ytd_hierarchy.items():
+
+        py = cls_data['totals'].get("PY", 0) or 0
+        cy = cls_data['totals'].get("CY", 0) or 0
+        pct = ((cy - py) / py * 100) if py != 0 else 0
+        pct_cls = "val-pos" if pct >= 0 else "val-neg"
+
+        # SUMMARY ROW
+        if cls_data.get("is_summary"):
+            ytd_html.append(
+                f"<div class='ytd-row lvl-1'>"
+                f"<div class='ytd-cell'>{cls_name.upper()}</div>"
+                f"<div class='ytd-cell align-right'>{fmt_currency(py)}</div>"
+                f"<div class='ytd-cell align-right'>{fmt_currency(cy)}</div>"
+                f"<div class='ytd-cell align-right {pct_cls}'>{pct:.0f}%</div>"
+                f"</div>"
+            )
+            continue
+
+        # CLASSIFICATION
+        ytd_html.append(
+            f"<details {ytd_open_attr}>"
+            f"<summary class='ytd-row lvl-1'>"
+            f"<div class='ytd-cell'><span class='arrow'>▶</span>📂 {cls_name}</div>"
+            f"<div class='ytd-cell align-right'>{fmt_currency(py)}</div>"
+            f"<div class='ytd-cell align-right'>{fmt_currency(cy)}</div>"
+            f"<div class='ytd-cell align-right {pct_cls}'>{pct:.0f}%</div>"
+            f"</summary>"
+        )
+
+        for acc_name, acc_data in cls_data['accounts'].items():
+            py = acc_data['totals'].get("PY", 0) or 0
+            cy = acc_data['totals'].get("CY", 0) or 0
+            pct = ((cy - py) / py * 100) if py != 0 else 0
+            pct_cls = "val-pos" if pct >= 0 else "val-neg"
+
+            ytd_html.append(
+                f"<details {ytd_open_attr}>"
+                f"<summary class='ytd-row lvl-2'>"
+                f"<div class='ytd-cell' style='padding-left:25px;'><span class='arrow'>▶</span>📄 {acc_name}</div>"
+                f"<div class='ytd-cell align-right'>{fmt_currency(py)}</div>"
+                f"<div class='ytd-cell align-right'>{fmt_currency(cy)}</div>"
+                f"<div class='ytd-cell align-right {pct_cls}'>{pct:.0f}%</div>"
+                f"</summary>"
+            )
+
+            for partner_name, prt in acc_data['partners'].items():
+                py = prt.get("PY", 0) or 0
+                cy = prt.get("CY", 0) or 0
+                pct = ((cy - py) / py * 100) if py != 0 else 0
+                pct_cls = "val-pos" if pct >= 0 else "val-neg"
+
+                ytd_html.append(
+                    f"<div class='ytd-row lvl-3'>"
+                    f"<div class='ytd-cell' style='padding-left:50px;'>• {partner_name}</div>"
+                    f"<div class='ytd-cell align-right'>{fmt_currency(py)}</div>"
+                    f"<div class='ytd-cell align-right'>{fmt_currency(cy)}</div>"
+                    f"<div class='ytd-cell align-right {pct_cls}'>{pct:.0f}%</div>"
+                f"</div>"
+                )
+            ytd_html.append("</details>")  # close account
+
+        ytd_html.append("</details>")  # close classification
+
+    # CLOSE HTML
+    ytd_html.append("</div></div>")
+    st.markdown("".join(ytd_html), unsafe_allow_html=True)
 
 # ===========================
 # LEDGER EDITOR VIEW
@@ -1410,8 +1830,8 @@ elif view_mode == "💰 Budget vs Actual":
     classification_order = [
         'Net Sales', 'Other Income', 'Cost of Goods Sold (COGS)', 'Employee cost',
         'Rent and Utilities', 'Marketing and Advertisment', 'Admin Expenses',
-        'Logistics', 'Other Expenses', 'Finance cost', 'Supplier Payments',
-        'Purchase Expense', 'Depreciation'
+        'Logistics', 'Other Expenses', 'Finance cost', 'Depreciation', 'Supplier Payments',
+        'Purchase Expense'
     ]
 
     st.markdown("""
