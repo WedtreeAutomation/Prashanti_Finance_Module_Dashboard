@@ -217,10 +217,8 @@ def fmt_currency(val):
         
     return f"₹{main_part}"
 
-# =============================
-# HIERARCHICAL DATA BUILDER
-# =============================
 def build_hierarchy_data(report_df, grouping_list, group_by='DisplayPeriod'):
+
     hierarchy = {}
 
     classification_order = [
@@ -230,50 +228,66 @@ def build_hierarchy_data(report_df, grouping_list, group_by='DisplayPeriod'):
         'Supplier Payments', 'Purchase Expense'
     ]
 
+    # Calculate Totals
     def get_totals(df):
-        return {
-            item: (
-                df[df[group_by] == item]['Balance']
-                .fillna(0)   
-                .sum()
-            )
-            for item in grouping_list
-        }
+        if df.empty:
+            return {k: 0 for k in grouping_list}
 
-    # Precompute classification totals
+        grouped = df.groupby(group_by)['Balance'].sum().to_dict()
+
+        result = {}
+        for key in grouping_list:
+            result[key] = grouped.get(key, 0)
+
+        return result
+
+    # Precompute Classifications Totals
     classification_totals_map = {}
-    for cls in report_df['classification'].dropna().unique():
-        classification_totals_map[cls] = get_totals(
-            report_df[report_df['classification'] == cls]
-        )
 
+    for cls in classification_order:
+        cls_df = report_df[report_df['classification'] == cls]
+        classification_totals_map[cls] = get_totals(cls_df)
+
+    # Ensure ALL classifications exist
+    for cls in classification_order:
+        if cls not in classification_totals_map:
+            classification_totals_map[cls] = {k: 0 for k in grouping_list}
+
+    # Utility Function to Sum Classifications' Totals
     def sum_dicts(dicts):
         result = {k: 0 for k in grouping_list}
         for d in dicts:
             for k in grouping_list:
-                result[k] += (d.get(k) or 0)
+                result[k] += d.get(k, 0)
         return result
 
+    # Utility Function to Subtract classifications' Totals
     def subtract_dicts(a, b):
         return {k: a.get(k, 0) - b.get(k, 0) for k in grouping_list}
 
-    unique_classifications = report_df['classification'].dropna().unique()
+    # Sort Classifications
+    unique_classifications = list(classification_totals_map.keys())
+
     sorted_classifications = sorted(
         unique_classifications,
         key=lambda x: classification_order.index(x) if x in classification_order else 999
     )
 
+    # Build Main Hierarchy
     for classification in sorted_classifications:
+
         cls_df = report_df[report_df['classification'] == classification]
 
-        # Build normal expandable node
+        # --- ACCOUNTS ---
         accounts = {}
-        for account in sorted(cls_df['account_name'].dropna().unique()):
+
+        for account in cls_df['account_name'].dropna().unique():
             acc_df = cls_df[cls_df['account_name'] == account]
+
             acc_totals = get_totals(acc_df)
 
             partners = {}
-            for partner in sorted(acc_df['partner_id_name'].dropna().unique()):
+            for partner in acc_df['partner_id_name'].dropna().unique():
                 prt_df = acc_df[acc_df['partner_id_name'] == partner]
                 partners[partner] = get_totals(prt_df)
 
@@ -288,98 +302,49 @@ def build_hierarchy_data(report_df, grouping_list, group_by='DisplayPeriod'):
             'is_summary': False
         }
 
-        # =============================
-        # INSERT SUMMARY ROWS
-        # =============================
+    # Create Summary Rows
+    net_sales = classification_totals_map.get('Net Sales', {})
+    other_income = classification_totals_map.get('Other Income', {})
+    cogs = classification_totals_map.get('Cost of Goods Sold (COGS)', {})
+    finance_cost = classification_totals_map.get('Finance cost', {})
 
-        # 1. Total Revenue
-        if classification == 'Other Income':
-            total_revenue = sum_dicts([
-                classification_totals_map.get('Net Sales', {}),
-                classification_totals_map.get('Other Income', {})
-            ])
-            hierarchy['Total Revenue'] = {
-                'totals': total_revenue,
-                'accounts': {},
-                'is_summary': True
-            }
+    operating_classes = [
+        'Employee cost', 'Rent and Utilities', 'Marketing and Advertisment',
+        'Admin Expenses', 'Logistics', 'Other Expenses'
+    ]
 
-        # 2. Total Expense (COGS)
-        if classification == 'Cost of Goods Sold (COGS)':
-            hierarchy['Total Expense'] = {
-                'totals': classification_totals_map.get('Cost of Goods Sold (COGS)', {}),
-                'accounts': {},
-                'is_summary': True
-            }
+    operating_expense = sum_dicts([
+        classification_totals_map.get(c, {}) for c in operating_classes
+    ])
 
-            # 3. Gross Profit
-            total_revenue = sum_dicts([
-                classification_totals_map.get('Net Sales', {}),
-                classification_totals_map.get('Other Income', {})
-            ])
-            total_expense = classification_totals_map.get('Cost of Goods Sold (COGS)', {})
+    total_revenue = sum_dicts([net_sales, other_income])
+    total_expense = cogs
+    gross_profit = subtract_dicts(total_revenue, total_expense)
+    operating_profit = subtract_dicts(gross_profit, operating_expense)
+    pbt = subtract_dicts(operating_profit, finance_cost)
 
-            gross_profit = subtract_dicts(total_revenue, total_expense)
+    # Insert Summary Rows in the Required Order
+    def insert_after(target, name, value):
+        new_dict = {}
+        for k, v in hierarchy.items():
+            new_dict[k] = v
+            if k == target:
+                new_dict[name] = {
+                    'totals': value,
+                    'accounts': {},
+                    'is_summary': True
+                }
+        return new_dict
 
-            hierarchy['Gross Profit'] = {
-                'totals': gross_profit,
-                'accounts': {},
-                'is_summary': True
-            }
-
-        # 4. Total Operating Expense
-        if classification == 'Other Expenses':
-            operating_expense_classes = [
-                'Employee cost', 'Rent and Utilities', 'Marketing and Advertisment',
-                'Admin Expenses', 'Logistics', 'Other Expenses'
-            ]
-
-            total_operating_expense = sum_dicts([
-                classification_totals_map.get(c, {}) for c in operating_expense_classes
-            ])
-
-            hierarchy['Total Operating Expense'] = {
-                'totals': total_operating_expense,
-                'accounts': {},
-                'is_summary': True
-            }
-
-            # 5. Operating Profit
-            gross_profit = subtract_dicts(
-                sum_dicts([
-                    classification_totals_map.get('Net Sales', {}),
-                    classification_totals_map.get('Other Income', {})
-                ]),
-                classification_totals_map.get('Cost of Goods Sold (COGS)', {})
-            )
-
-            operating_profit = subtract_dicts(gross_profit, total_operating_expense)
-
-            hierarchy['Operating Profit'] = {
-                'totals': operating_profit,
-                'accounts': {},
-                'is_summary': True
-            }
-
-        # 6. PBT
-        if classification == 'Finance cost':
-            operating_profit = hierarchy.get('Operating Profit', {}).get('totals', {})
-
-            finance_cost = classification_totals_map.get('Finance cost', {})
-
-            pbt = subtract_dicts(operating_profit, finance_cost)
-
-            hierarchy['PBT'] = {
-                'totals': pbt,
-                'accounts': {},
-                'is_summary': True
-            }
+    hierarchy = insert_after('Other Income', 'Total Revenue', total_revenue)
+    hierarchy = insert_after('Cost of Goods Sold (COGS)', 'Total Expense', total_expense)
+    hierarchy = insert_after('Total Expense', 'Gross Profit', gross_profit)
+    hierarchy = insert_after('Other Expenses', 'Total Operating Expense', operating_expense)
+    hierarchy = insert_after('Total Operating Expense', 'Operating Profit', operating_profit)
+    hierarchy = insert_after('Finance cost', 'PBT', pbt)
 
     return hierarchy
 
-# =============================
-# EXCEL EXPORT WITH NATIVE GROUPING
-# =============================
 def build_excel_report(hierarchy, periods, store_filter="All", brand="pra", report_type="pnl", expand_all=False, open_classifications=None, open_accounts=None):
     brand_name = "Prashanti" if brand == "pra" else "Wedtree"
     if open_classifications is None: open_classifications = set()
@@ -440,20 +405,9 @@ def build_excel_report(hierarchy, periods, store_filter="All", brand="pra", repo
     current_row = header_row + 1
     
     classification_order = [
-        'Net Sales',
-        'Other Income',
-        'Cost of Goods Sold (COGS)',
-        'Employee cost',
-        'Rent and Utilities',            
-        'Marketing and Advertisment',    
-        'Admin Expenses',
-        'Logistics',
-        'Other Expenses',
-        'Finance cost',
-        'Depreciation',
-        'Supplier Payments',            
-        'Purchase Expense'
-        
+        'Net Sales','Other Income','Cost of Goods Sold (COGS)','Employee cost','Rent and Utilities',
+        'Marketing and Advertisment','Admin Expenses','Logistics','Other Expenses','Finance cost',
+        'Depreciation','Supplier Payments','Purchase Expense'  
     ]
     
     def get_classification_order(cls):
@@ -465,7 +419,7 @@ def build_excel_report(hierarchy, periods, store_filter="All", brand="pra", repo
     for cls_name, cls_data in hierarchy.items():
         cls_data = hierarchy[cls_name]
 
-        # ✅ SUMMARY ROW (NON-EXPANDABLE)
+        # SUMMARY ROW (NON-EXPANDABLE)
         if cls_data.get("is_summary"):
             cls_total = sum((v or 0) for v in cls_data['totals'].values())
 
@@ -492,7 +446,6 @@ def build_excel_report(hierarchy, periods, store_filter="All", brand="pra", repo
 
             ws.row_dimensions[current_row].height = 20
 
-            # 🚨 IMPORTANT: NO outline level → non-expandable
             current_row += 1
             continue
         cls_key = f"cls_{cls_name}"
@@ -625,7 +578,6 @@ def build_ytd_comparison(report_df, current_periods, previous_periods, group_by=
     )
 
     return agg
-
 
 # =============================
 # PERSISTENT SESSION STATE
@@ -783,14 +735,12 @@ EXPENSE_CLASSES = ['Cost of Goods Sold (COGS)',
         'Finance cost',
         'Depreciation']
 
-# =============================
-# SIDEBAR NAVIGATION (ENHANCED UI ALIGNMENT)
-# =============================
+# ================================
+# SIDEBAR NAVIGATION WITH FILTERS
+# ================================
 with st.sidebar:
 
-    # -----------------------------
     # USER INFO
-    # -----------------------------
     st.markdown(f"""
     <div class="sidebar-user-info">
         <p style='margin:0; font-size:11px; color:#64748B;'>SIGNED IN AS</p>
@@ -798,9 +748,7 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
 
-    # -----------------------------
     # BRAND SELECTOR
-    # -----------------------------
     st.markdown("<h2>Brand</h2>", unsafe_allow_html=True)
 
     selected_label = st.selectbox(
@@ -818,10 +766,9 @@ with st.sidebar:
 
     st.markdown("<hr>", unsafe_allow_html=True)
 
-    # -----------------------------
     # NAVIGATION
-    # -----------------------------
     view_options = ["📈 Financial Insights", "✏️ Ledger Editor"]
+
     # Hide Budget vs Actual for WED
     if st.session_state.brand == "pra":
         view_options.append("💰 Budget vs Actual")
@@ -1069,9 +1016,7 @@ if view_mode == "📈 Financial Insights":
                 use_container_width=True
             )
 
-    # ==========================================
-    # HIGH-PERFORMANCE HTML/CSS GRID TABLE
-    # ==========================================
+    # --- TABLE ---
     num_periods = len(selected_periods)
     grid_template = f"350px repeat({num_periods}, minmax(130px, 1fr)) minmax(140px, 1fr)"
 
@@ -1129,11 +1074,10 @@ if view_mode == "📈 Financial Insights":
         html_parts.append(f"<div class='pnl-cell align-right'>{short_p.upper()}</div>")
     html_parts.append("<div class='pnl-cell align-right'>TOTAL</div></div>")
 
-    # FIX: Use pnl specific state
     pnl_open_attr = "open" if st.session_state.get('expand_pnl', False) else ""
 
     for cls_name, cls_data in hierarchy.items():
-        # ✅ CHECK: summary row (non-expandable)
+        # Summary row (non-expandable)
         if cls_data.get("is_summary"):
 
             html_parts.append("<div class='pnl-row lvl-1'>")
@@ -1344,7 +1288,7 @@ if view_mode == "📈 Financial Insights":
             )
 
             for s in relevant_stores:
-                v = cls_data['totals'].get(p, 0) or 0
+                v = cls_data['totals'].get(s, 0) or 0
                 color_cls = "val-pos" if v >= 0 else "val-neg"
 
                 store_html.append(
@@ -1361,9 +1305,8 @@ if view_mode == "📈 Financial Insights":
             )
 
             store_html.append("</div>")
-
-            # 🚨 IMPORTANT: skip expandable logic
             continue
+
         store_html.append(f"<details {store_open_attr}><summary class='store-row lvl-1'>")
         store_html.append(f"<div class='store-cell'><span class='arrow'>▶</span> 📂 {cls_name.upper()}</div>")
         for s in relevant_stores:
@@ -1396,9 +1339,7 @@ if view_mode == "📈 Financial Insights":
     store_html.append("</div></div>")
     st.markdown("".join(store_html), unsafe_allow_html=True)
 
-    # ==========================================
-    # 📊 YTD COMPARISON DATA PREPARATION
-    # ==========================================
+    #  YTD COMPARISON DATA PREPARATION
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown("---")
 
@@ -1449,9 +1390,8 @@ if view_mode == "📈 Financial Insights":
         group_by="YearType"
     )
 
-    # ==========================================
     # 📊 YTD UI HEADER
-    # ==========================================
+
     col1, col2 = st.columns([3, 2])
 
     with col1:
@@ -1488,9 +1428,8 @@ if view_mode == "📈 Financial Insights":
                 use_container_width=True
             )
 
-    # ==========================================
-    # 📊 YTD TABLE UI
-    # ==========================================
+    # --- YTD UI ---
+
     ytd_html = []
 
     ytd_html.append("""
@@ -1555,9 +1494,7 @@ if view_mode == "📈 Financial Insights":
     </div>
     """)
 
-    # ==========================================
     # DATA ROWS
-    # ==========================================
     ytd_open_attr = "open" if st.session_state.get("expand_ytd", False) else ""
     for cls_name, cls_data in ytd_hierarchy.items():
 
@@ -1924,8 +1861,6 @@ elif view_mode == "💰 Budget vs Actual":
     # Failsafe: Ensure 'Actual' column exists even if actual_summary was completely empty
     if 'Actual' not in pivot_df.columns:
         pivot_df['Actual'] = 0.0
-
-    # ==========================================
 
     def get_val(df, part, col):
         return df.loc[df['Particulars'] == part, col].sum()
