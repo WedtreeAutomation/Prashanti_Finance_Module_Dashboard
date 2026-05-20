@@ -216,7 +216,29 @@ def fmt_currency(val):
         main_part = remaining + ',' + last_three
         
     return f"₹{main_part}"
+def fmt_indian_chart(val):
+    """Format number in Indian system for chart labels."""
+    if val is None:
+        return "₹0"
+    val = float(val)
+    abs_val = abs(val)
+    if abs_val >= 1_00_00_000:  # 1 Crore
+        return f"₹{val/1_00_00_000:.2f} Cr"
+    elif abs_val >= 1_00_000:   # 1 Lakh
+        return f"₹{val/1_00_000:.2f} L"
+    else:
+        return fmt_currency(val)
 
+def fmt_ytick(val, _):
+    """Y-axis tick formatter for Indian system."""
+    abs_val = abs(val)
+    if abs_val >= 1_00_00_000:
+        return f"₹{val/1_00_00_000:.1f}Cr"
+    elif abs_val >= 1_00_000:
+        return f"₹{val/1_00_000:.1f}L"
+    else:
+        return f"₹{int(val):,}"
+    
 def build_hierarchy_data(report_df, grouping_list, group_by='DisplayPeriod'):
 
     hierarchy = {}
@@ -579,6 +601,10 @@ def build_ytd_comparison(report_df, current_periods, previous_periods, group_by=
 
     return agg
 
+def get_fy_label(year):
+    """Returns e.g. 'FY 25-26' for year=2025 (Apr 2025 – Mar 2026)."""
+    return f"FY {str(year)[-2:]}-{str(year + 1)[-2:]}"
+
 # =============================
 # PERSISTENT SESSION STATE
 # =============================
@@ -798,12 +824,15 @@ with st.sidebar:
         else:
             available_years = sorted(df['Year'].dropna().unique(), reverse=True)
             selected_year = st.selectbox("Financial Year (Apr–Mar)", available_years)
+            num_prev_fy = st.number_input("Previous FYs to Compare", min_value=0, max_value=10, value=0)
             fy_periods = get_financial_year_range(df, selected_year, start_month=4)
             if fy_periods:
                 selected_periods = [p['display'] for p in fy_periods]
                 st.info(f"{len(selected_periods)} periods: {fy_periods[0]['display']} → {fy_periods[-1]['display']}")
             else:
                 selected_periods = []
+            # Build list of all FY years to compare: current + previous N
+            fy_years_to_compare = [selected_year - i for i in range(num_prev_fy + 1)]
 
         store_filter = st.selectbox(
             "🏢 Store",
@@ -934,18 +963,53 @@ if view_mode == "📈 Financial Insights":
         st.info("ℹ️ No periods selected or available.")
         st.stop()
 
-    report_df = df[df['DisplayPeriod'].isin(selected_periods)].copy()
-    if store_filter != "All": report_df = report_df[report_df['Store'] == store_filter]
+    # Detect if we are in Financial Year mode
+    is_fy_mode = (date_range_type == "📆 Financial Year")
 
-    if report_df.empty:
+    if is_fy_mode:
+        # Build per-FY aggregated data for all selected comparison years
+        fy_agg_rows = []
+        for fy_year in fy_years_to_compare:
+            fy_p = get_financial_year_range(df, fy_year, start_month=4)
+            fy_display_list = [p['display'] for p in fy_p]
+            fy_slice = df[df['DisplayPeriod'].isin(fy_display_list)].copy()
+            if store_filter != "All":
+                fy_slice = fy_slice[fy_slice['Store'] == store_filter]
+            fy_label = get_fy_label(fy_year)
+            fy_slice['FYLabel'] = fy_label
+            fy_agg_rows.append(fy_slice)
+
+        if not fy_agg_rows:
+            st.info("ℹ️ No data available for the selected filters.")
+            st.stop()
+
+        fy_combined_df = pd.concat(fy_agg_rows, ignore_index=True)
+        # fy_labels ordered newest → oldest (matches fy_years_to_compare order)
+        fy_labels = [get_fy_label(y) for y in fy_years_to_compare]
+
+        # report_df for the CURRENT FY only (used for store comparison / YTD below)
+        report_df = fy_agg_rows[0].copy()
+    else:
+        report_df = df[df['DisplayPeriod'].isin(selected_periods)].copy()
+        if store_filter != "All":
+            report_df = report_df[report_df['Store'] == store_filter]
+
+    if (is_fy_mode and fy_combined_df.empty) or (not is_fy_mode and report_df.empty):
         st.info("ℹ️ No data available for the selected filters.")
         st.stop()
 
     # --- KPI CARDS ---
-    latest_period = selected_periods[0]
-    latest_data = report_df[report_df['DisplayPeriod'] == latest_period]
-    total_revenue = latest_data[latest_data['classification'].isin(REVENUE_CLASSES)]['Balance'].sum()
-    total_expenses = latest_data[latest_data['classification'].isin(EXPENSE_CLASSES)]['Balance'].sum()
+    if is_fy_mode:
+        # Aggregate entire current FY for KPIs
+        kpi_data = report_df  # report_df is already filtered to current FY + store
+        kpi_label = get_fy_label(fy_years_to_compare[0])
+    else:
+        latest_period = selected_periods[0]
+        kpi_data = report_df[report_df['DisplayPeriod'] == latest_period]
+        kpi_label = latest_period[:3]
+
+    total_revenue = kpi_data[kpi_data['classification'].isin(REVENUE_CLASSES)]['Balance'].sum()
+    total_expenses = kpi_data[kpi_data['classification'].isin(EXPENSE_CLASSES)]['Balance'].sum()
     net_profit = total_revenue - total_expenses
     profit_margin = (net_profit / total_revenue * 100) if total_revenue != 0 else 0
 
@@ -954,7 +1018,7 @@ if view_mode == "📈 Financial Insights":
         (cols[0], "bg-revenue", "REVENUE", fmt_currency(total_revenue), f"{abs((total_expenses/total_revenue*100) if total_revenue!=0 else 0):.1f}% OPEX"),
         (cols[1], "bg-expense", "EXPENSES", fmt_currency(total_expenses), f"{abs((total_expenses/total_revenue*100) if total_revenue!=0 else 0):.1f}% of Rev"),
         (cols[2], "bg-profit", "NET PROFIT", fmt_currency(net_profit), f"{abs((total_expenses/total_revenue*100) if total_revenue!=0 else 0):.1f}% Margin"),
-        (cols[3], "bg-margin", "MARGIN", f"{profit_margin:.1f}%", f"{latest_period[:3]}")
+        (cols[3], "bg-margin", "MARGIN", f"{profit_margin:.1f}%", f"{kpi_label}")
     ]
     for col, bg_class, title, value, sub in kpi_configs:
         col.markdown(f"""
@@ -968,17 +1032,90 @@ if view_mode == "📈 Financial Insights":
     st.write("<br>", unsafe_allow_html=True)
 
     # --- CHART ---
-    profit_df = calculate_profit_metrics(report_df, selected_periods, REVENUE_CLASSES, EXPENSE_CLASSES)
+    if is_fy_mode:
+        # One bar-group per FY — aggregate Revenue, Expenses, Profit per FY label
+        fy_chart_rows = []
+        for fy_label in fy_labels:
+            fy_slice = fy_combined_df[fy_combined_df['FYLabel'] == fy_label]
+            rev = fy_slice[fy_slice['classification'].isin(REVENUE_CLASSES)]['Balance'].sum()
+            exp = fy_slice[fy_slice['classification'].isin(EXPENSE_CLASSES)]['Balance'].sum()
+            pft = rev - exp
+            fy_chart_rows.append({'FYLabel': fy_label, 'Revenue': rev, 'Expenses': exp, 'Profit': pft})
+        chart_df = pd.DataFrame(fy_chart_rows)
+        x_col = 'FYLabel'
+        # Reverse so oldest FY is on the left
+        chart_df = chart_df.iloc[::-1].reset_index(drop=True)
+    else:
+        chart_df = calculate_profit_metrics(report_df, selected_periods, REVENUE_CLASSES, EXPENSE_CLASSES)
+        x_col = 'DisplayPeriod'
+
+    # Pre-format hover text for each trace
+    revenue_hover   = [f"<b>Revenue</b><br>{fmt_indian_chart(v)}" for v in chart_df['Revenue']]
+    expenses_hover  = [f"<b>Expenses</b><br>{fmt_indian_chart(v)}" for v in chart_df['Expenses']]
+    profit_hover    = [f"<b>Net Profit</b><br>{fmt_indian_chart(v)}" for v in chart_df['Profit']]
+
+    # Y-axis tick values
+    all_vals = list(chart_df['Revenue']) + list(chart_df['Expenses']) + list(chart_df['Profit'])
+    y_max = max((abs(v) for v in all_vals), default=1)
+    import numpy as np
+    tick_step = 10**int(np.floor(np.log10(y_max))) if y_max > 0 else 1
+    tick_vals = list(range(0, int(y_max * 1.2), int(tick_step)))
+    tick_texts = [fmt_ytick(v, None) for v in tick_vals]
+
     fig = go.Figure()
-    fig.add_trace(go.Bar(x=profit_df['DisplayPeriod'], y=profit_df['Revenue'], name='Revenue', marker_color='#0AB370', opacity=0.8))
-    fig.add_trace(go.Bar(x=profit_df['DisplayPeriod'], y=profit_df['Expenses'], name='Expenses', marker_color='#F43F5E', opacity=0.8))
-    fig.add_trace(go.Scatter(x=profit_df['DisplayPeriod'], y=profit_df['Profit'], mode='lines+markers', name='Net Profit', line=dict(color='#2563EB', width=3, shape='spline'), marker=dict(size=8, color='#1D4ED8'), yaxis='y'))
-    fig.update_layout(title=dict(text='<b>Revenue, Expenses & Net Profit</b>', font=dict(size=18, color='#0F2044')), barmode='group', plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', margin=dict(l=40, r=40, t=50, b=40), yaxis=dict(gridcolor='#E2E8F0', title='Amount (₹)', tickformat='₹,.0f'), xaxis=dict(showline=True, linecolor='#CBD5E1', tickfont=dict(size=10)), hovermode='x unified', legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, bgcolor='rgba(255,255,255,0.9)', font=dict(size=10)))
+    fig.add_trace(go.Bar(
+        x=chart_df[x_col], y=chart_df['Revenue'],
+        name='Revenue', marker_color='#0AB370', opacity=0.8,
+        customdata=[fmt_indian_chart(v) for v in chart_df['Revenue']],
+        hovertemplate='Revenue: %{customdata}<extra></extra>'
+    ))
+    fig.add_trace(go.Bar(
+        x=chart_df[x_col], y=chart_df['Expenses'],
+        name='Expenses', marker_color='#F43F5E', opacity=0.8,
+        customdata=[fmt_indian_chart(v) for v in chart_df['Expenses']],
+        hovertemplate='Expenses: %{customdata}<extra></extra>'
+    ))
+    fig.add_trace(go.Scatter(
+        x=chart_df[x_col], y=chart_df['Profit'],
+        mode='lines+markers', name='Net Profit',
+        line=dict(color='#2563EB', width=3, shape='spline'),
+        marker=dict(size=8, color='#1D4ED8'),
+        customdata=[fmt_indian_chart(v) for v in chart_df['Profit']],
+        hovertemplate='Net Profit: %{customdata}<extra></extra>'
+    ))
+    fig.update_layout(
+        title=dict(text='<b>Revenue, Expenses & Net Profit</b>', font=dict(size=18, color='#0F2044')),
+        barmode='group',
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        margin=dict(l=40, r=40, t=50, b=40),
+        yaxis=dict(
+            gridcolor='#E2E8F0',
+            title='Amount (₹)',
+            tickvals=tick_vals,
+            ticktext=tick_texts,
+            tickfont=dict(size=10)
+        ),
+        xaxis=dict(showline=True, linecolor='#CBD5E1', tickfont=dict(size=10)),
+        hovermode='x unified',
+        legend=dict(
+            orientation="h", yanchor="bottom", y=1.02,
+            xanchor="right", x=1,
+            bgcolor='rgba(255,255,255,0.9)', font=dict(size=10)
+        )
+    )
     st.plotly_chart(fig, width='stretch')
 
     st.markdown("---")
     
-    hierarchy = build_hierarchy_data(report_df, selected_periods)
+    if is_fy_mode:
+        # Build hierarchy with one column per FY (aggregated), newest first
+        pnl_df_for_hierarchy = fy_combined_df.copy()
+        pnl_periods = fy_labels  # e.g. ['FY 25-26', 'FY 24-25']
+        hierarchy = build_hierarchy_data(pnl_df_for_hierarchy, pnl_periods, group_by='FYLabel')
+    else:
+        pnl_periods = selected_periods
+        hierarchy = build_hierarchy_data(report_df, pnl_periods)
 
     col1, col2 = st.columns([3, 2])
     with col1:
@@ -998,7 +1135,7 @@ if view_mode == "📈 Financial Insights":
 
             excel_file = build_excel_report(
                 hierarchy=hierarchy, 
-                periods=selected_periods, 
+                periods=pnl_periods, 
                 store_filter=store_filter,
                 brand=st.session_state.brand,
                 expand_all=st.session_state.get('expand_pnl', False),
@@ -1017,7 +1154,7 @@ if view_mode == "📈 Financial Insights":
             )
 
     # --- TABLE ---
-    num_periods = len(selected_periods)
+    num_periods = len(pnl_periods)
     grid_template = f"350px repeat({num_periods}, minmax(130px, 1fr)) minmax(140px, 1fr)"
 
     pnl_open_attr = "open" if st.session_state.expand_pnl else ""
@@ -1069,8 +1206,10 @@ if view_mode == "📈 Financial Insights":
 
     html_parts.append("<div class='pnl-row pnl-header'>")
     html_parts.append("<div class='pnl-cell'>PARTICULARS</div>")
-    for p in selected_periods:
-        short_p = p[:3] + " " + p[-2:]
+    for p in pnl_periods:
+        short_p = p  # FY labels like 'FY 25-26' are already short; months get abbreviated below
+        if not is_fy_mode:
+            short_p = p[:3] + " " + p[-2:]
         html_parts.append(f"<div class='pnl-cell align-right'>{short_p.upper()}</div>")
     html_parts.append("<div class='pnl-cell align-right'>TOTAL</div></div>")
 
@@ -1088,7 +1227,7 @@ if view_mode == "📈 Financial Insights":
                 f"{cls_name.upper()}</div>"
             )
 
-            for p in selected_periods:
+            for p in pnl_periods:
                 v = cls_data['totals'].get(p, 0) or 0
                 color_cls = "val-pos" if v >= 0 else "val-neg"
 
@@ -1109,7 +1248,7 @@ if view_mode == "📈 Financial Insights":
             continue
         html_parts.append(f"<details {pnl_open_attr}><summary class='pnl-row lvl-1'>")
         html_parts.append(f"<div class='pnl-cell' title='{cls_name.upper()}'><span class='arrow'>▶</span> 📂 {cls_name.upper()}</div>")
-        for p in selected_periods:
+        for p in pnl_periods:
             v = cls_data['totals'].get(p, 0) or 0
             color_cls = "val-pos" if v >= 0 else "val-neg"
             html_parts.append(f"<div class='pnl-cell align-right {color_cls}'>{fmt_currency(v)}</div>")
@@ -1121,7 +1260,7 @@ if view_mode == "📈 Financial Insights":
         for acc_name, acc_data in cls_data['accounts'].items():
             html_parts.append(f"<details {pnl_open_attr}><summary class='pnl-row lvl-2'>")
             html_parts.append(f"<div class='pnl-cell' title='{acc_name}' style='padding-left: 28px;'><span class='arrow'>▶</span> 📄 {acc_name}</div>")
-            for p in selected_periods:
+            for p in pnl_periods:
                 v = acc_data['totals'].get(p, 0)
                 color_cls = "val-pos" if v >= 0 else "val-neg"
                 html_parts.append(f"<div class='pnl-cell align-right {color_cls}'>{fmt_currency(v)}</div>")
@@ -1134,7 +1273,7 @@ if view_mode == "📈 Financial Insights":
             for partner_name, prt_totals in acc_data['partners'].items():
                 html_parts.append("<div class='pnl-row lvl-3'>")
                 html_parts.append(f"<div class='pnl-cell' title='{partner_name}' style='padding-left: 65px;'>• {partner_name}</div>")
-                for p in selected_periods:
+                for p in pnl_periods:
                     v = prt_totals.get(p, 0)
                     color_cls = "val-pos" if v >= 0 else "val-neg"
                     html_parts.append(f"<div class='pnl-cell align-right {color_cls}'>{fmt_currency(v)}</div>")
@@ -1152,19 +1291,21 @@ if view_mode == "📈 Financial Insights":
     st.write("<br>", unsafe_allow_html=True)
     st.markdown("---")
 
-    # 1. Prepare Data for Store Comparison
-    # Check if a full year is selected (Assuming 12 months = Full FY)
-    is_full_fy = len(selected_periods) >= 12 
-
-    if is_full_fy:
-        # IF FULL FY: Use all data (this aggregates all 12 months per store)
+    if is_fy_mode:
+        # In FY mode, report_df is already the full current FY — use it directly
         comp_df = report_df.copy()
-        display_period_label = "Financial Year"
+        display_period_label = get_fy_label(fy_years_to_compare[0])
     else:
-        # ELSE: Use only the first selected month (Base Period)
-        base_period = selected_periods[0]
-        comp_df = report_df[report_df['DisplayPeriod'] == base_period].copy()
-        display_period_label = base_period
+        # Check if a full year is selected (Assuming 12 months = Full FY)
+        is_full_fy = len(selected_periods) >= 12
+
+        if is_full_fy:
+            comp_df = report_df.copy()
+            display_period_label = "Financial Year"
+        else:
+            base_period = selected_periods[0]
+            comp_df = report_df[report_df['DisplayPeriod'] == base_period].copy()
+            display_period_label = base_period
 
     relevant_stores = sorted(comp_df['Store'].unique().tolist())
     store_hierarchy = build_hierarchy_data(comp_df, relevant_stores, group_by='Store')
@@ -1343,9 +1484,28 @@ if view_mode == "📈 Financial Insights":
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown("---")
 
-    is_full_fy = len(selected_periods) >= 12
+    if is_fy_mode:
+        # CY = full current FY slice (already in report_df)
+        cy_df = report_df.copy()
 
-    if is_full_fy:
+        # Build PY periods = same months as current FY but one year back
+        cy_periods_in_data = cy_df['DisplayPeriod'].unique().tolist()
+        py_periods = []
+        for p in cy_periods_in_data:
+            month, year = p.split()
+            py_periods.append(f"{month} {int(year) - 1}")
+
+        py_df = df[df['DisplayPeriod'].isin(py_periods)].copy()
+        if store_filter != "All":
+            py_df = py_df[py_df['Store'] == store_filter]
+
+        comparison_df = pd.concat([
+            cy_df.assign(YearType="CY"),
+            py_df.assign(YearType="PY")
+        ])
+        ytd_label = f"{get_fy_label(fy_years_to_compare[0])} vs {get_fy_label(fy_years_to_compare[0] - 1)}"
+
+    elif len(selected_periods) >= 12:
         cy_df = report_df.copy()
 
         py_periods = []
@@ -1354,7 +1514,6 @@ if view_mode == "📈 Financial Insights":
             py_periods.append(f"{month} {int(year) - 1}")
 
         py_df = df[df['DisplayPeriod'].isin(py_periods)].copy()
-
         if store_filter != "All":
             py_df = py_df[py_df['Store'] == store_filter]
 
@@ -1367,12 +1526,10 @@ if view_mode == "📈 Financial Insights":
     else:
         base_period = selected_periods[0]
         month, year = base_period.split()
-
         py_period = f"{month} {int(year) - 1}"
 
         cy_df = report_df[report_df['DisplayPeriod'] == base_period]
         py_df = df[df['DisplayPeriod'] == py_period]
-
         if store_filter != "All":
             py_df = py_df[py_df['Store'] == store_filter]
 
@@ -1380,7 +1537,6 @@ if view_mode == "📈 Financial Insights":
             cy_df.assign(YearType="CY"),
             py_df.assign(YearType="PY")
         ])
-
         ytd_label = f"{base_period} vs {py_period}"
 
     # Build hierarchy
@@ -1391,25 +1547,20 @@ if view_mode == "📈 Financial Insights":
     )
 
     # 📊 YTD UI HEADER
-
     col1, col2 = st.columns([3, 2])
 
     with col1:
         st.markdown(f"### 📊 YTD Comparison — {ytd_label}")
-
     with col2:
         b1, b2, b3 = st.columns([1, 1, 1])
-
         with b1:
             if st.button("⊞ Expand All", key="ytd_expand_btn", use_container_width=True):
                 st.session_state.expand_ytd = True
                 st.rerun()
-
         with b2:
             if st.button("Collapse All", key="ytd_collapse_btn", use_container_width=True):
                 st.session_state.expand_ytd = False
                 st.rerun()
-
         with b3:
             ytd_excel = build_excel_report(
                 hierarchy=ytd_hierarchy,
