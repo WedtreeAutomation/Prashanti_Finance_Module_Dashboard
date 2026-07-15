@@ -154,6 +154,19 @@ if st.session_state.get("brand") == "wed":
     }
     """
 
+elif st.session_state.get("brand") == "ma":
+
+    READ_QUERY = """
+    query {
+      executesp_ma_readData { id Ledger classification ContraName Store Balance Year MonthName Month FinancialYearMonth last_modified_at last_modified_user }
+    }
+    """
+
+    UPSERT_MUTATION = """
+    mutation upsertBalance($year: Int!, $monthName: String!, $store: String!, $balance: Float, $account_name: String!, $classification: String!, $partner_id_name: String!, $last_modified_at: DateTime, $last_modified_user: String) {
+      executesp_ma_upsertBalance(year: $year, monthName: $monthName, store: $store, balance: $balance, account_name: $account_name, classification: $classification, partner_id_name: $partner_id_name, last_modified_at: $last_modified_at, last_modified_user: $last_modified_user) { rows_affected }
+    }
+    """
 else:  # PRA (default)
 
     READ_QUERY = """
@@ -216,6 +229,7 @@ def fmt_currency(val):
         main_part = remaining + ',' + last_three
         
     return f"₹{main_part}"
+
 def fmt_indian_chart(val):
     """Format number in Indian system for chart labels."""
     if val is None:
@@ -246,7 +260,7 @@ def build_hierarchy_data(report_df, grouping_list, group_by='DisplayPeriod'):
     classification_order = [
         'Net Sales', 'Other Income', 'Cost of Goods Sold (COGS)', 'Employee cost',
         'Rent and Utilities', 'Marketing and Advertisment', 'Admin Expenses',
-        'Logistics', 'Other Expenses', 'Finance cost', 'Depreciation',
+        'Logistics', 'Packing Material', 'Other Expenses', 'Finance cost', 'Depreciation',
         'Supplier Payments', 'Purchase Expense'
     ]
 
@@ -332,7 +346,7 @@ def build_hierarchy_data(report_df, grouping_list, group_by='DisplayPeriod'):
 
     operating_classes = [
         'Employee cost', 'Rent and Utilities', 'Marketing and Advertisment',
-        'Admin Expenses', 'Logistics', 'Other Expenses'
+        'Admin Expenses', 'Logistics', 'Packing Material', 'Other Expenses'
     ]
 
     operating_expense = sum_dicts([
@@ -368,7 +382,7 @@ def build_hierarchy_data(report_df, grouping_list, group_by='DisplayPeriod'):
     return hierarchy
 
 def build_excel_report(hierarchy, periods, store_filter="All", brand="pra", report_type="pnl", expand_all=False, open_classifications=None, open_accounts=None):
-    brand_name = "Prashanti" if brand == "pra" else "Wedtree"
+    brand_name = "Prashanti" if brand == "pra" else "Wedtree" if brand == "wed" else "Maatshi"
     if open_classifications is None: open_classifications = set()
     if open_accounts is None: open_accounts = set()
     
@@ -428,8 +442,8 @@ def build_excel_report(hierarchy, periods, store_filter="All", brand="pra", repo
     
     classification_order = [
         'Net Sales','Other Income','Cost of Goods Sold (COGS)','Employee cost','Rent and Utilities',
-        'Marketing and Advertisment','Admin Expenses','Logistics','Other Expenses','Finance cost',
-        'Depreciation','Supplier Payments','Purchase Expense'  
+        'Marketing and Advertisment','Admin Expenses','Logistics','Packing Material','Other Expenses',
+        'Finance cost','Depreciation','Supplier Payments','Purchase Expense'  
     ]
     
     def get_classification_order(cls):
@@ -704,7 +718,8 @@ if "brand" not in st.session_state:
 
 brand_map = {
     "Prashanti": "pra",
-    "Wedtree": "wed"
+    "Wedtree": "wed",
+    "Maatshi": "ma"
 }
 
 reverse_brand_map = {v: k for k, v in brand_map.items()}
@@ -715,10 +730,15 @@ reverse_brand_map = {v: k for k, v in brand_map.items()}
 @st.cache_data(ttl=300)
 def load_data(brand):
     result = run_graphql(READ_QUERY)
-    data_key = "executesp_wd_readData" if brand == "wed" else "executesp_pr_readData"
+    if brand == "wed":
+        data_key = "executesp_wd_readData"
+    elif brand == "ma":
+        data_key = "executesp_ma_readData"
+    else:
+        data_key = "executesp_pr_readData"
     items = result.get("data", {}).get(data_key, [])
     df = pd.DataFrame(items)
-    if brand == "wed":
+    if brand in ('wed','ma'):
         df = df.rename(columns={
             "Ledger": "account_name",
             "ContraName": "partner_id_name"
@@ -757,6 +777,7 @@ EXPENSE_CLASSES = ['Cost of Goods Sold (COGS)',
         'Marketing and Advertisment',    
         'Admin Expenses',
         'Logistics',
+        'Packing Material',
         'Other Expenses',
         'Finance cost',
         'Depreciation']
@@ -1918,8 +1939,8 @@ elif view_mode == "💰 Budget vs Actual":
     classification_order = [
         'Net Sales', 'Other Income', 'Cost of Goods Sold (COGS)', 'Employee cost',
         'Rent and Utilities', 'Marketing and Advertisment', 'Admin Expenses',
-        'Logistics', 'Other Expenses', 'Finance cost', 'Depreciation', 'Supplier Payments',
-        'Purchase Expense'
+        'Logistics', 'Packing Material', 'Other Expenses', 'Finance cost', 
+        'Depreciation', 'Supplier Payments', 'Purchase Expense'
     ]
 
     st.markdown("""
@@ -2025,6 +2046,7 @@ elif view_mode == "💰 Budget vs Actual":
                 get_val(pivot_df, 'Marketing and Advertisment', 'Budget') + 
                 get_val(pivot_df, 'Admin Expenses', 'Budget') + 
                 get_val(pivot_df, 'Logistics', 'Budget') +
+                get_val(pivot_df, 'Packing Material', 'Budget') +
                 get_val(pivot_df, 'Other Expenses', 'Budget')
     )
     op_exp_a = (get_val(pivot_df, 'Employee cost', 'Actual') + 
@@ -2032,6 +2054,7 @@ elif view_mode == "💰 Budget vs Actual":
                 get_val(pivot_df, 'Marketing and Advertisment', 'Actual') + 
                 get_val(pivot_df, 'Admin Expenses', 'Actual') + 
                 get_val(pivot_df, 'Logistics', 'Actual') +
+                get_val(pivot_df, 'Packing Material', 'Actual') +
                 get_val(pivot_df, 'Other Expenses', 'Actual')
     )
     fin_cost_b = get_val(pivot_df, 'Finance cost', 'Budget')
@@ -2044,7 +2067,7 @@ elif view_mode == "💰 Budget vs Actual":
         {'Particulars': 'TOTAL EXPENSE', 'Budget': exp_b, 'Actual': exp_a, 'is_calc': True},
         {'Particulars': 'GROSS PROFIT', 'Budget': rev_b - exp_b, 'Actual': rev_a - exp_a, 'is_calc': True},
         'Employee cost', 'Rent and Utilities', 'Marketing and Advertisment', 
-        'Admin Expenses', 'Logistics', 'Other Expenses',
+        'Admin Expenses', 'Logistics', 'Packing Material', 'Other Expenses',
         {'Particulars': 'TOTAL OPERATING EXPENSE', 'Budget': op_exp_b, 'Actual': op_exp_a, 'is_calc': True},
         {'Particulars': 'OPERATING PROFIT (EBIT)', 'Budget': rev_b - exp_b - op_exp_b, 'Actual': rev_a - exp_a - op_exp_a, 'is_calc': True},
         'Finance cost', 'Depreciation',
